@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Mobile GUI Agent</string>
+    <string name="accessibility_service_name">Mobile GUI Agent 제어 서비스</string>
+    <string name="accessibility_service_description">화면의 접근성 트리를 읽고 사용자가 요청한 테스트 동작을 수행합니다.</string>
+</resources>
