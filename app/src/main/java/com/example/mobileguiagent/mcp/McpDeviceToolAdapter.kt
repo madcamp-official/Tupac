@@ -1,6 +1,7 @@
 package com.example.mobileguiagent.mcp
 
 import android.util.Base64
+import com.example.mobileguiagent.device.BackDeviceTool
 import com.example.mobileguiagent.device.CaptureScreenDeviceTool
 import com.example.mobileguiagent.device.DeviceToolCall
 import com.example.mobileguiagent.device.DeviceToolDefinition
@@ -17,9 +18,15 @@ class McpDeviceToolAdapter(
             .first { definition -> definition.name == CaptureScreenDeviceTool.NAME }
             .toMcpDefinition(EXTERNAL_SCREENSHOT_NAME)
 
+    fun backDefinition(): JSONObject =
+        registry.definitions
+            .first { definition -> definition.name == BackDeviceTool.NAME }
+            .toMcpDefinition(EXTERNAL_BACK_NAME)
+
     fun call(externalName: String, arguments: JSONObject): JSONObject {
         val deviceToolName = when (externalName) {
             EXTERNAL_SCREENSHOT_NAME -> CaptureScreenDeviceTool.NAME
+            EXTERNAL_BACK_NAME -> BackDeviceTool.NAME
             else -> return error(
                 code = "UNKNOWN_TOOL",
                 message = "등록되지 않은 MCP Device Tool입니다: $externalName",
@@ -66,9 +73,28 @@ class McpDeviceToolAdapter(
                 )
                 .put("isError", false)
 
+            is DeviceToolResult.Success -> success(result.message)
+
             is DeviceToolResult.Error -> error(result.code, result.message)
         }
     }
+
+    private fun success(message: String?): JSONObject = JSONObject()
+        .put(
+            "content",
+            JSONArray().put(
+                JSONObject()
+                    .put("type", "text")
+                    .put(
+                        "text",
+                        JSONObject()
+                            .put("success", true)
+                            .apply { if (message != null) put("message", message) }
+                            .toString(),
+                    ),
+            ),
+        )
+        .put("isError", false)
 
     private fun DeviceToolDefinition.toMcpDefinition(externalName: String): JSONObject =
         JSONObject()
@@ -96,5 +122,6 @@ class McpDeviceToolAdapter(
 
     companion object {
         const val EXTERNAL_SCREENSHOT_NAME = "device_screenshot"
+        const val EXTERNAL_BACK_NAME = "device_back"
     }
 }

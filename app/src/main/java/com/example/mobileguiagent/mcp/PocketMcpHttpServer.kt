@@ -295,6 +295,8 @@ class PocketMcpHttpServer(
                     ),
                 ),
         )
+    }.also { result ->
+        result.getJSONArray("tools").put(mcpDeviceToolAdapter.backDefinition())
     }
 
     private fun objectSchema(properties: JSONObject): JSONObject = JSONObject()
@@ -325,7 +327,8 @@ class PocketMcpHttpServer(
                     toolResult(snapshotJson(snapshot, maxNodes))
                 }
             }
-            McpDeviceToolAdapter.EXTERNAL_SCREENSHOT_NAME ->
+            McpDeviceToolAdapter.EXTERNAL_SCREENSHOT_NAME,
+            McpDeviceToolAdapter.EXTERNAL_BACK_NAME ->
                 mcpDeviceToolAdapter.call(name, arguments)
             "device_open_settings" -> openSettings()
             "device_click_node" -> clickNode(arguments)
