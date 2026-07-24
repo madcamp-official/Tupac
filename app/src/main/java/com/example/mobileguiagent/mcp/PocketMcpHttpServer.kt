@@ -401,13 +401,30 @@ class PocketMcpHttpServer(
 
         val action = clickSnapshotNodeOnMainThread(target, observed.packageName)
             ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
+
+        // 이중 전략(구현가이드 3장 노드 주소 지정): 라벨 기반 클릭(ACTION_CLICK)이
+        // 실패하면 — 라벨 없는 노드 등 — snapshot에 있는 bounds 중앙을 좌표 탭한다.
+        // 화면이 안 바뀐 건 위에서 이미 검증했으므로 이 좌표를 신뢰할 수 있다.
+        var success = action.success
+        var method = "node_click"
+        if (!success) {
+            val tapped = tapOnMainThread(
+                target.bounds.exactCenterX(),
+                target.bounds.exactCenterY(),
+            )
+            if (tapped) {
+                success = true
+                method = "coordinate_tap"
+            }
+        }
+
         val after = waitForScreenChange(current)
         if (after != null) lastSnapshot.set(after)
         val changed = after?.fingerprint?.hash != current.fingerprint.hash
 
         return toolResult(
             JSONObject()
-                .put("success", action.success)
+                .put("success", success)
                 .put("node_id", nodeId)
                 .put(
                     "label",
@@ -415,6 +432,7 @@ class PocketMcpHttpServer(
                 )
                 .put("matched_text", action.matchedText ?: JSONObject.NULL)
                 .put("used_clickable_ancestor", action.usedClickableAncestor)
+                .put("method", method)
                 .put("screen_changed", changed)
                 .put("before_package", current.packageName)
                 .put("after_package", after?.packageName ?: current.packageName)
@@ -422,8 +440,22 @@ class PocketMcpHttpServer(
                     "after_snapshot_id",
                     after?.fingerprint?.hash ?: current.fingerprint.hash,
                 ),
-            isError = !action.success,
+            isError = !success,
         )
+    }
+
+    private fun tapOnMainThread(x: Float, y: Float): Boolean {
+        val service = AgentAccessibilityService.activeService ?: return false
+        val result = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            service.tap(x, y) { completed ->
+                result.set(completed)
+                latch.countDown()
+            }
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        return result.get()
     }
 
     private fun toolError(code: String, message: String): JSONObject = toolResult(
