@@ -484,9 +484,29 @@ class PocketMcpHttpServer(
             .put("timestamp_ms", System.currentTimeMillis())
     }
 
+    /**
+     * LLM에 보낼 노드만 남기는 필터.
+     *
+     * 아래 중 하나라도 참이면 "의미 있는 노드"로 보고 유지한다:
+     *  - 직접 동작 가능: clickable / editable / scrollable
+     *  - 정보가 있음: text(보이는 글자) 또는 content_description(아이콘 등 접근성 라벨)
+     *
+     * 걸러지는 건 라벨도 동작도 없는 순수 레이아웃 컨테이너·장식 뷰뿐이다.
+     * 놓침(recall) 방지를 우선해 라벨 없는 clickable도 남긴다.
+     */
+    private fun isMeaningfulNode(node: UiNode): Boolean =
+        node.clickable ||
+            node.editable ||
+            node.scrollable ||
+            !node.text.isNullOrBlank() ||
+            !node.contentDescription.isNullOrBlank()
+
     private fun snapshotJson(snapshot: UiSnapshot, maxNodes: Int): JSONObject {
+        // 필터는 반환용 목록에만 적용. 저장 원본(lastSnapshot)과 snapshot_id(fingerprint)는
+        // 그대로라 click_node 정합성 검사는 영향받지 않는다. node.id도 원래 값을 유지한다.
+        val meaningful = snapshot.nodes.filter(::isMeaningfulNode)
         val nodes = JSONArray()
-        snapshot.nodes.take(maxNodes).forEach { node ->
+        meaningful.take(maxNodes).forEach { node ->
             nodes.put(
                 JSONObject()
                     .put("id", node.id)
@@ -516,8 +536,9 @@ class PocketMcpHttpServer(
             .put("captured_at_ms", snapshot.capturedAtMillis)
             .put("package_name", snapshot.packageName)
             .put("node_count", snapshot.nodes.size)
+            .put("meaningful_node_count", meaningful.size)
             .put("returned_node_count", nodes.length())
-            .put("truncated", snapshot.nodes.size > nodes.length())
+            .put("truncated", meaningful.size > nodes.length())
             .put("nodes", nodes)
     }
 
