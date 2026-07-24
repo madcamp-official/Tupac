@@ -299,6 +299,8 @@ class PocketMcpHttpServer(
         result.getJSONArray("tools").put(mcpDeviceToolAdapter.backDefinition())
     }.also { result ->
         result.getJSONArray("tools").put(mcpDeviceToolAdapter.scrollDefinition())
+    }.also { result ->
+        result.getJSONArray("tools").put(mcpDeviceToolAdapter.typeTextDefinition())
     }
 
     private fun objectSchema(properties: JSONObject): JSONObject = JSONObject()
@@ -331,7 +333,8 @@ class PocketMcpHttpServer(
             }
             McpDeviceToolAdapter.EXTERNAL_SCREENSHOT_NAME,
             McpDeviceToolAdapter.EXTERNAL_BACK_NAME,
-            McpDeviceToolAdapter.EXTERNAL_SCROLL_NAME ->
+            McpDeviceToolAdapter.EXTERNAL_SCROLL_NAME,
+            McpDeviceToolAdapter.EXTERNAL_TYPE_TEXT_NAME ->
                 mcpDeviceToolAdapter.call(name, arguments)
             "device_open_settings" -> openSettings()
             "device_click_node" -> clickNode(arguments)

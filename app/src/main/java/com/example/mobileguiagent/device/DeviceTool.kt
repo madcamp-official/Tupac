@@ -38,7 +38,12 @@ interface DeviceTool {
 }
 
 class DeviceToolRegistry(
-    tools: List<DeviceTool> = listOf(CaptureScreenDeviceTool, BackDeviceTool, ScrollDeviceTool),
+    tools: List<DeviceTool> = listOf(
+        CaptureScreenDeviceTool,
+        BackDeviceTool,
+        ScrollDeviceTool,
+        TypeTextDeviceTool,
+    ),
 ) {
     private val toolsByName = tools.associateBy { tool -> tool.definition.name }
 
