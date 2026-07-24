@@ -2,9 +2,8 @@ package com.example.mobileguiagent.mcp
 
 import android.os.Handler
 import android.os.Looper
-import android.util.Base64
 import com.example.mobileguiagent.accessibility.AgentAccessibilityService
-import com.example.mobileguiagent.accessibility.ScreenCaptureResult
+import com.example.mobileguiagent.device.DeviceToolRegistry
 import com.example.mobileguiagent.model.NodeActionResult
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiSnapshot
@@ -42,6 +41,7 @@ class PocketMcpHttpServer(
     private val acceptExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val requestExecutor: ExecutorService = Executors.newCachedThreadPool()
     private val lastSnapshot = AtomicReference<UiSnapshot?>()
+    private val mcpDeviceToolAdapter = McpDeviceToolAdapter(DeviceToolRegistry())
     private var serverSocket: ServerSocket? = null
 
     fun start() {
@@ -250,25 +250,7 @@ class PocketMcpHttpServer(
                     ),
             )
             .put(
-                JSONObject()
-                    .put("name", "device_screenshot")
-                    .put(
-                        "description",
-                        "Captures the current Android screen through AccessibilityService and returns a JPEG image.",
-                    )
-                    .put(
-                        "inputSchema",
-                        objectSchema(
-                            JSONObject().put(
-                                "max_dimension",
-                                JSONObject()
-                                    .put("type", "integer")
-                                    .put("minimum", 320)
-                                    .put("maximum", MAX_SCREENSHOT_DIMENSION)
-                                    .put("default", DEFAULT_SCREENSHOT_DIMENSION),
-                            ),
-                        ),
-                    ),
+                mcpDeviceToolAdapter.screenshotDefinition(),
             ),
     ).also { result ->
         result.getJSONArray("tools").put(
@@ -343,12 +325,8 @@ class PocketMcpHttpServer(
                     toolResult(snapshotJson(snapshot, maxNodes))
                 }
             }
-            "device_screenshot" -> captureScreen(
-                arguments.optInt(
-                    "max_dimension",
-                    DEFAULT_SCREENSHOT_DIMENSION,
-                ).coerceIn(320, MAX_SCREENSHOT_DIMENSION),
-            )
+            McpDeviceToolAdapter.EXTERNAL_SCREENSHOT_NAME ->
+                mcpDeviceToolAdapter.call(name, arguments)
             "device_open_settings" -> openSettings()
             "device_click_node" -> clickNode(arguments)
             else -> toolResult(
@@ -388,62 +366,6 @@ class PocketMcpHttpServer(
                 .put("after_package", after?.packageName ?: JSONObject.NULL)
                 .put("after_snapshot_id", after?.fingerprint?.hash ?: JSONObject.NULL),
         )
-    }
-
-    private fun captureScreen(maxDimension: Int): JSONObject {
-        val service = AgentAccessibilityService.activeService
-            ?: return toolError(
-                "ACCESSIBILITY_NOT_CONNECTED",
-                "접근성 서비스가 연결되지 않았습니다.",
-            )
-        val result = AtomicReference<ScreenCaptureResult?>()
-        val latch = CountDownLatch(1)
-        Handler(Looper.getMainLooper()).post {
-            service.captureScreen(maxDimension) { capture ->
-                result.set(capture)
-                latch.countDown()
-            }
-        }
-        if (!latch.await(SCREENSHOT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-            return toolError("SCREENSHOT_TIMEOUT", "화면 캡처 응답 시간이 초과됐습니다.")
-        }
-        return when (val capture = result.get()) {
-            is ScreenCaptureResult.Success -> JSONObject()
-                .put(
-                    "content",
-                    JSONArray()
-                        .put(
-                            JSONObject()
-                                .put("type", "text")
-                                .put(
-                                    "text",
-                                    JSONObject()
-                                        .put("success", true)
-                                        .put("format", "image/jpeg")
-                                        .put("width", capture.width)
-                                        .put("height", capture.height)
-                                        .put("bytes", capture.jpegBytes.size)
-                                        .toString(),
-                                ),
-                        )
-                        .put(
-                            JSONObject()
-                                .put("type", "image")
-                                .put(
-                                    "data",
-                                    Base64.encodeToString(
-                                        capture.jpegBytes,
-                                        Base64.NO_WRAP,
-                                    ),
-                                )
-                                .put("mimeType", "image/jpeg"),
-                        ),
-                )
-                .put("isError", false)
-
-            is ScreenCaptureResult.Error -> toolError(capture.code, capture.message)
-            null -> toolError("SCREENSHOT_NO_RESULT", "화면 캡처 결과가 없습니다.")
-        }
     }
 
     private fun clickNode(arguments: JSONObject): JSONObject {
@@ -728,13 +650,10 @@ class PocketMcpHttpServer(
         private const val MCP_VERSION = "2025-11-25"
         private const val DEFAULT_RETURNED_NODES = 120
         private const val MAX_RETURNED_NODES = 500
-        private const val DEFAULT_SCREENSHOT_DIMENSION = 1200
-        private const val MAX_SCREENSHOT_DIMENSION = 1600
         private const val MAX_BODY_BYTES = 1_048_576
         private const val MAX_HEADER_LINE_BYTES = 16_384
         private const val SOCKET_TIMEOUT_MS = 15_000
         private const val MAIN_THREAD_TIMEOUT_MS = 3_000L
-        private const val SCREENSHOT_TIMEOUT_MS = 8_000L
         private const val ACTION_VERIFY_TIMEOUT_MS = 3_000L
         private const val ACTION_VERIFY_POLL_MS = 150L
     }
