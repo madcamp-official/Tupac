@@ -30,8 +30,10 @@ object ScrollDeviceTool : DeviceTool {
     override val definition = DeviceToolDefinition(
         name = NAME,
         description = "Scrolls the current screen to reveal off-screen content. Use it when " +
-            "the node you need is not in the latest observe result. 'down' reveals content " +
-            "further down a list; 'up' scrolls back toward the top.",
+            "the node you need is not in the latest observe result. The direction names the " +
+            "content you want to reveal: 'down' reveals content further down a list, 'up' goes " +
+            "back toward the top, 'right' reveals content to the right such as the next " +
+            "home-screen page, and 'left' goes back to the left.",
         inputSchema = JSONObject()
             .put("type", "object")
             .put(
@@ -65,8 +67,9 @@ object ScrollDeviceTool : DeviceTool {
             )
 
         // 2) 화면 크기로 스와이프 좌표 계산.
-        //    direction은 "보고 싶은" 방향이고, 손가락은 그 반대로 움직인다.
-        //    (아래를 더 보려면 손가락은 위로 밀어 올린다.)
+        //    direction은 "드러낼(보고 싶은) 방향"이고, 손가락은 그 반대로 움직인다.
+        //    예) down = 아래 내용을 보려고 손가락을 위로 밀어 올림.
+        //        right = 오른쪽 페이지를 보려고 손가락을 왼쪽으로 민다.
         val metrics = service.resources.displayMetrics
         val width = metrics.widthPixels.toFloat()
         val height = metrics.heightPixels.toFloat()
@@ -76,8 +79,8 @@ object ScrollDeviceTool : DeviceTool {
         val (startX, startY, endX, endY) = when (direction) {
             "down" -> listOf(centerX, height * FAR, centerX, height * NEAR)
             "up" -> listOf(centerX, height * NEAR, centerX, height * FAR)
-            "left" -> listOf(width * FAR, centerY, width * NEAR, centerY)
-            else -> listOf(width * NEAR, centerY, width * FAR, centerY) // right
+            "right" -> listOf(width * FAR, centerY, width * NEAR, centerY)
+            else -> listOf(width * NEAR, centerY, width * FAR, centerY) // left
         }
 
         // 3) swipe는 콜백으로 끝을 알려주는 비동기 함수 → latch로 기다린다.
