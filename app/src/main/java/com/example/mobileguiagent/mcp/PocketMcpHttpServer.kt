@@ -493,13 +493,20 @@ class PocketMcpHttpServer(
      *
      * 걸러지는 건 라벨도 동작도 없는 순수 레이아웃 컨테이너·장식 뷰뿐이다.
      * 놓침(recall) 방지를 우선해 라벨 없는 clickable도 남긴다.
+     *
+     * 추가로 visibleToUser=false(가려졌거나 화면 밖, 예: 열린 폴더 뒤 workspace,
+     * 스크롤 밖 리스트 항목, 옆 홈페이지 peek)는 제외한다. 화면에 실제로 없는 걸
+     * LLM에 보여주면 착각하므로.
      */
     private fun isMeaningfulNode(node: UiNode): Boolean =
-        node.clickable ||
-            node.editable ||
-            node.scrollable ||
-            !node.text.isNullOrBlank() ||
-            !node.contentDescription.isNullOrBlank()
+        node.visibleToUser &&
+            (
+                node.clickable ||
+                    node.editable ||
+                    node.scrollable ||
+                    !node.text.isNullOrBlank() ||
+                    !node.contentDescription.isNullOrBlank()
+                )
 
     private fun snapshotJson(snapshot: UiSnapshot, maxNodes: Int): JSONObject {
         // 필터는 반환용 목록에만 적용. 저장 원본(lastSnapshot)과 snapshot_id(fingerprint)는

@@ -231,6 +231,7 @@ class AgentAccessibilityService : AccessibilityService() {
             checked = if (node.isCheckable) node.isChecked else null,
             bounds = bounds,
             depth = depth,
+            visibleToUser = node.isVisibleToUser,
         )
 
         for (index in 0 until node.childCount) {

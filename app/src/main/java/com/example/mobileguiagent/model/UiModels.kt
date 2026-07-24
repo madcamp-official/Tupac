@@ -16,6 +16,8 @@ data class UiNode(
     val checked: Boolean?,
     val bounds: Rect,
     val depth: Int,
+    // 현재 화면에 실제로 보이는지(안드로이드 isVisibleToUser). 가려지거나 화면 밖이면 false.
+    val visibleToUser: Boolean = true,
 )
 
 data class UiSnapshot(
