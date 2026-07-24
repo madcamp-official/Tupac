@@ -3,6 +3,7 @@ package com.example.mobileguiagent.mcp
 import android.util.Base64
 import com.example.mobileguiagent.device.BackDeviceTool
 import com.example.mobileguiagent.device.CaptureScreenDeviceTool
+import com.example.mobileguiagent.device.ScrollDeviceTool
 import com.example.mobileguiagent.device.DeviceToolCall
 import com.example.mobileguiagent.device.DeviceToolDefinition
 import com.example.mobileguiagent.device.DeviceToolRegistry
@@ -23,10 +24,16 @@ class McpDeviceToolAdapter(
             .first { definition -> definition.name == BackDeviceTool.NAME }
             .toMcpDefinition(EXTERNAL_BACK_NAME)
 
+    fun scrollDefinition(): JSONObject =
+        registry.definitions
+            .first { definition -> definition.name == ScrollDeviceTool.NAME }
+            .toMcpDefinition(EXTERNAL_SCROLL_NAME)
+
     fun call(externalName: String, arguments: JSONObject): JSONObject {
         val deviceToolName = when (externalName) {
             EXTERNAL_SCREENSHOT_NAME -> CaptureScreenDeviceTool.NAME
             EXTERNAL_BACK_NAME -> BackDeviceTool.NAME
+            EXTERNAL_SCROLL_NAME -> ScrollDeviceTool.NAME
             else -> return error(
                 code = "UNKNOWN_TOOL",
                 message = "등록되지 않은 MCP Device Tool입니다: $externalName",
@@ -123,5 +130,6 @@ class McpDeviceToolAdapter(
     companion object {
         const val EXTERNAL_SCREENSHOT_NAME = "device_screenshot"
         const val EXTERNAL_BACK_NAME = "device_back"
+        const val EXTERNAL_SCROLL_NAME = "device_scroll"
     }
 }
