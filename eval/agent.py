@@ -267,8 +267,11 @@ def run(goal, brain, max_steps, all_nodes, dry):
             history.append(f"step{step}: 형식 오류 → 건너뜀")
             continue
 
-        detail = (action.get("node_id") or action.get("screen")
-                  or action.get("direction") or action.get("text") or "")
+        # 모델이 넘긴 인자를 로그에 남긴다. 없으면 실패했을 때 무엇을 넘겼는지
+        # 알 수가 없다(실측: task만 찍히고 web_search인지 timer인지 안 보였다).
+        detail = " ".join(str(action.get(key)) for key in
+                          ("node_id", "screen", "task", "value", "app", "direction", "text")
+                          if action.get(key))
         print(f"[{step}] {action['action']} {detail}"
               f"  ({observation['meaningful_node_count']}노드, {elapsed:.1f}s)")
         if action.get("reason"):

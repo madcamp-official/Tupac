@@ -22,6 +22,11 @@ import org.json.JSONObject
  *   dial은 다이얼러에 번호를 채워줄 뿐 전화를 걸지 않고(ACTION_CALL이 아니라
  *   ACTION_DIAL), sms·email도 작성 화면까지만 연다. 전화와 메시지는 되돌릴 수
  *   없고 상대방에게 남는 행동이라, 마지막 한 번은 사람이 눌러야 한다.
+ *
+ * 반면 alarm·timer는 실제로 등록되고 시작된다:
+ *   ACTION_SET_ALARM과 ACTION_SET_TIMER가 그렇게 동작한다(실측: 삼성 시계 앱은
+ *   알람을 바로 켜고 타이머를 바로 돌린다). 기기 안에서 끝나고 사용자가 쉽게
+ *   되돌릴 수 있어 그대로 두지만, "화면만 연다"고 오해하면 안 된다.
  */
 object SystemTaskDeviceTool : DeviceTool {
     const val NAME = "start_task"
@@ -34,8 +39,8 @@ object SystemTaskDeviceTool : DeviceTool {
         "web_search" to "웹 검색 (value=검색어)",
         "open_url" to "브라우저로 주소 열기 (value=URL)",
         "map" to "지도에서 장소 찾기 (value=장소 이름)",
-        "alarm" to "알람 추가 화면 (value=HH:MM, text=알람 이름)",
-        "timer" to "타이머 (value=분 단위 숫자)",
+        "alarm" to "알람을 바로 등록하고 켠다 (value=HH:MM, text=알람 이름)",
+        "timer" to "타이머를 바로 시작한다 (value=분 단위 숫자)",
         "show_alarms" to "알람 목록",
         "camera" to "카메라",
         "gallery" to "갤러리, 사진 보기",
@@ -46,8 +51,9 @@ object SystemTaskDeviceTool : DeviceTool {
     override val definition = DeviceToolDefinition(
         name = NAME,
         description = "Starts a built-in Android task (dial, sms, search, map, alarm, " +
-            "camera...) with a standard intent. Never places a call or sends a message; " +
-            "it only opens the corresponding screen with the values filled in.",
+            "camera...) with a standard intent. Never places a call or sends a message: " +
+            "those open a composer with the values filled in. Note that alarm and timer " +
+            "do take effect immediately.",
         inputSchema = JSONObject()
             .put("type", "object")
             .put(
