@@ -44,6 +44,9 @@ class DeviceToolRegistry(
         ScrollDeviceTool,
         TypeTextDeviceTool,
         OpenScreenDeviceTool,
+        SystemTaskDeviceTool,
+        LaunchAppDeviceTool,
+        ListAppsDeviceTool,
     ),
 ) {
     private val toolsByName = tools.associateBy { tool -> tool.definition.name }

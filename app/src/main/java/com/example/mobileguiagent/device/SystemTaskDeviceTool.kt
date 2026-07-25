@@ -1,0 +1,201 @@
+package com.example.mobileguiagent.device
+
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
+import android.provider.AlarmClock
+import android.provider.CalendarContract
+import android.provider.ContactsContract
+import android.provider.MediaStore
+import android.util.Log
+import com.example.mobileguiagent.accessibility.AgentAccessibilityService
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * 안드로이드 기본 기능을 인텐트로 바로 실행한다. 빅스비가 하는 일의 대부분이 이것이다.
+ *
+ * OpenScreenDeviceTool과 나눠놓은 이유는 인자 때문이다. 설정 화면 열기는 "어느
+ * 화면"만 있으면 되지만, 이쪽은 전화번호·검색어·시각 같은 값을 받아야 한다.
+ *
+ * 발신·전송은 하지 않는다:
+ *   dial은 다이얼러에 번호를 채워줄 뿐 전화를 걸지 않고(ACTION_CALL이 아니라
+ *   ACTION_DIAL), sms·email도 작성 화면까지만 연다. 전화와 메시지는 되돌릴 수
+ *   없고 상대방에게 남는 행동이라, 마지막 한 번은 사람이 눌러야 한다.
+ */
+object SystemTaskDeviceTool : DeviceTool {
+    const val NAME = "start_task"
+
+    /** 키 -> 모델에게 보여줄 설명. 어떤 인자가 필요한지까지 적어야 모델이 채운다. */
+    private val hints: Map<String, String> = linkedMapOf(
+        "dial" to "전화 앱에 번호 입력 (value=전화번호). 걸지는 않음",
+        "sms" to "문자 작성 화면 (value=전화번호, text=내용). 보내지는 않음",
+        "email" to "메일 작성 화면 (value=이메일 주소, text=내용). 보내지는 않음",
+        "web_search" to "웹 검색 (value=검색어)",
+        "open_url" to "브라우저로 주소 열기 (value=URL)",
+        "map" to "지도에서 장소 찾기 (value=장소 이름)",
+        "alarm" to "알람 추가 화면 (value=HH:MM, text=알람 이름)",
+        "timer" to "타이머 (value=분 단위 숫자)",
+        "show_alarms" to "알람 목록",
+        "camera" to "카메라",
+        "gallery" to "갤러리, 사진 보기",
+        "contacts" to "연락처 목록",
+        "calendar" to "일정 추가 화면 (value=일정 제목)",
+    )
+
+    override val definition = DeviceToolDefinition(
+        name = NAME,
+        description = "Starts a built-in Android task (dial, sms, search, map, alarm, " +
+            "camera...) with a standard intent. Never places a call or sends a message; " +
+            "it only opens the corresponding screen with the values filled in.",
+        inputSchema = JSONObject()
+            .put("type", "object")
+            .put(
+                "properties",
+                JSONObject()
+                    .put(
+                        "task",
+                        JSONObject()
+                            .put("type", "string")
+                            .put("enum", JSONArray(hints.keys.toList()))
+                            .put("description", taskHints()),
+                    )
+                    .put(
+                        "value",
+                        JSONObject()
+                            .put("type", "string")
+                            .put("description", "작업에 따라 전화번호, 검색어, 시각 등."),
+                    )
+                    .put(
+                        "text",
+                        JSONObject()
+                            .put("type", "string")
+                            .put("description", "문자·메일 내용이나 알람 이름."),
+                    ),
+            )
+            .put("required", JSONArray().put("task"))
+            .put("additionalProperties", false),
+    )
+
+    fun taskHints(): String = hints.entries.joinToString(", ") { (key, hint) -> "$key($hint)" }
+
+    override fun execute(arguments: JSONObject): DeviceToolResult {
+        val task = arguments.optString("task")
+        val value = arguments.optString("value").trim()
+        val text = arguments.optString("text").trim()
+
+        val service = AgentAccessibilityService.activeService
+            ?: return DeviceToolResult.Error(
+                code = "ACCESSIBILITY_NOT_CONNECTED",
+                message = "접근성 서비스가 연결되지 않았습니다.",
+            )
+
+        val intent = when (task) {
+            "dial" -> {
+                if (value.isEmpty()) return missingValue(task)
+                Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(value)}"))
+            }
+
+            "sms" -> {
+                if (value.isEmpty()) return missingValue(task)
+                Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${Uri.encode(value)}"))
+                    .apply { if (text.isNotEmpty()) putExtra("sms_body", text) }
+            }
+
+            "email" -> {
+                if (value.isEmpty()) return missingValue(task)
+                Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${Uri.encode(value)}"))
+                    .apply { if (text.isNotEmpty()) putExtra(Intent.EXTRA_TEXT, text) }
+            }
+
+            "web_search" -> {
+                if (value.isEmpty()) return missingValue(task)
+                Intent(Intent.ACTION_WEB_SEARCH).putExtra("query", value)
+            }
+
+            "open_url" -> {
+                if (value.isEmpty()) return missingValue(task)
+                Intent(Intent.ACTION_VIEW, Uri.parse(withScheme(value)))
+            }
+
+            "map" -> {
+                if (value.isEmpty()) return missingValue(task)
+                Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(value)}"))
+            }
+
+            "alarm" -> {
+                val parts = value.split(":")
+                val hour = parts.getOrNull(0)?.trim()?.toIntOrNull()
+                val minute = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 0
+                if (hour == null || hour !in 0..23 || minute !in 0..59) {
+                    return DeviceToolResult.Error(
+                        code = "BAD_TIME",
+                        message = "알람 시각은 HH:MM 형식이어야 합니다(예: 07:30). 받은 값: $value",
+                    )
+                }
+                Intent(AlarmClock.ACTION_SET_ALARM)
+                    .putExtra(AlarmClock.EXTRA_HOUR, hour)
+                    .putExtra(AlarmClock.EXTRA_MINUTES, minute)
+                    .apply { if (text.isNotEmpty()) putExtra(AlarmClock.EXTRA_MESSAGE, text) }
+            }
+
+            "timer" -> {
+                val minutes = value.filter(Char::isDigit).toIntOrNull()
+                if (minutes == null || minutes <= 0) {
+                    return DeviceToolResult.Error(
+                        code = "BAD_DURATION",
+                        message = "타이머는 분 단위 숫자여야 합니다(예: 10). 받은 값: $value",
+                    )
+                }
+                Intent(AlarmClock.ACTION_SET_TIMER)
+                    .putExtra(AlarmClock.EXTRA_LENGTH, minutes * 60)
+                    .apply { if (text.isNotEmpty()) putExtra(AlarmClock.EXTRA_MESSAGE, text) }
+            }
+
+            "show_alarms" -> Intent(AlarmClock.ACTION_SHOW_ALARMS)
+
+            "camera" -> Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+
+            "gallery" -> Intent(Intent.ACTION_VIEW).setType("image/*")
+
+            "contacts" -> Intent(Intent.ACTION_VIEW, ContactsContract.Contacts.CONTENT_URI)
+
+            "calendar" -> Intent(Intent.ACTION_INSERT)
+                .setData(CalendarContract.Events.CONTENT_URI)
+                .apply { if (value.isNotEmpty()) putExtra(CalendarContract.Events.TITLE, value) }
+
+            else -> return DeviceToolResult.Error(
+                code = "UNKNOWN_TASK",
+                message = "모르는 작업입니다: $task. 가능한 값: ${hints.keys.joinToString()}",
+            )
+        }
+
+        return runCatching {
+            service.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            DeviceToolResult.Success(message = "$task 실행했습니다. ${hints[task]}")
+        }.getOrElse { error ->
+            // 패키지 가시성(Android 11+) 때문에 resolveActivity로 미리 확인하면
+            // 실제로는 열리는 화면도 없다고 나온다. 그래서 일단 시도하고 잡는다.
+            Log.e(TAG, "Unable to start task: $task", error)
+            DeviceToolResult.Error(
+                code = if (error is ActivityNotFoundException) {
+                    "NO_APP_FOR_TASK"
+                } else {
+                    "START_TASK_FAILED"
+                },
+                message = "$task 을(를) 실행하지 못했습니다: ${error.message}",
+            )
+        }
+    }
+
+    private fun missingValue(task: String) = DeviceToolResult.Error(
+        code = "MISSING_VALUE",
+        message = "$task 에는 value가 필요합니다. ${hints[task]}",
+    )
+
+    /** 모델이 "google.com"처럼 스킴 없이 줄 때가 있다. */
+    private fun withScheme(url: String): String =
+        if (url.startsWith("http://") || url.startsWith("https://")) url else "https://$url"
+
+    private const val TAG = "SystemTaskDeviceTool"
+}

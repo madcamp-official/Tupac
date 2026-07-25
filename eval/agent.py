@@ -87,22 +87,34 @@ def mcp_call(method, params):
         return json.load(response)
 
 
+# 모델에게 보여줄 이름 -> (MCP tool, 그 tool에서 설명을 뽑을 인자)
+SHORTCUT_SOURCES = (
+    ("open에 쓸 수 있는 screen 값", "device_open_screen", "screen"),
+    ("task에 쓸 수 있는 값", "device_start_task", "task"),
+)
+
+
 def shortcut_hint():
     """폰이 실제로 지원하는 바로가기 목록을 tools/list에서 읽어온다.
 
-    프롬프트에 화면 목록을 하드코딩하면 앱에 화면을 추가했을 때 어긋난다.
-    스키마의 enum과 description이 곧 모델에게 줄 설명이므로 그대로 가져온다.
-    구형 앱이 깔린 폰에는 이 tool이 없을 수 있어, 없으면 조용히 빈 문자열.
+    프롬프트에 목록을 하드코딩하면 앱에 기능을 추가했을 때 어긋난다. 스키마의
+    enum과 description이 곧 모델에게 줄 설명이므로 그대로 가져온다. 구형 앱이
+    깔린 폰에는 이 tool들이 없을 수 있어, 없는 건 조용히 건너뛴다.
     """
     try:
-        tools = mcp_call("tools/list", {})["result"]["tools"]
+        tools = {tool["name"]: tool for tool in mcp_call("tools/list", {})["result"]["tools"]}
     except (OSError, KeyError, json.JSONDecodeError):
         return ""
-    for tool in tools:
-        if tool.get("name") == "device_open_screen":
-            screen = tool["inputSchema"]["properties"]["screen"]
-            return screen.get("description", ", ".join(screen.get("enum", [])))
-    return ""
+
+    blocks = []
+    for title, tool_name, argument in SHORTCUT_SOURCES:
+        tool = tools.get(tool_name)
+        if not tool:
+            continue
+        schema = tool["inputSchema"]["properties"][argument]
+        described = schema.get("description") or ", ".join(schema.get("enum", []))
+        blocks.append(f"{title}:\n{described}")
+    return "\n\n".join(blocks)
 
 
 def render_screen(observation, all_nodes):
@@ -177,6 +189,27 @@ def execute(action, observation, dry):
             return f"성공: {screen} 화면을 바로 열었음"
         # 기기에 없는 화면이면 모델이 알아서 눌러 찾아가야 한다. 이유를 그대로 전달.
         return f"실패: {result.get('message') or result.get('error')}"
+
+    if kind == "task":
+        arguments = {"task": action.get("task", "")}
+        for key in ("value", "text"):
+            if action.get(key):
+                arguments[key] = action[key]
+        result = mcp("device_start_task", arguments)
+        # 실패 사유(인자 누락, 잘못된 시각 형식...)는 폰이 고칠 방법까지 적어 보낸다.
+        return (f"성공: {result.get('message')}" if result.get("success")
+                else f"실패: {result.get('message') or result.get('error')}")
+
+    if kind == "launch":
+        result = mcp("device_launch_app", {"name": action.get("app", "")})
+        if result.get("success"):
+            return f"성공: {result.get('message')}"
+        # 못 찾았으면 폰이 비슷한 앱 이름을 알려준다. 모델이 다음 스텝에 고쳐 부른다.
+        return f"실패: {result.get('message') or result.get('error')}"
+
+    if kind == "list_apps":
+        result = mcp("device_list_apps", {"query": action.get("app", "")})
+        return f"설치된 앱: {result.get('message')}"
 
     return f"알 수 없는 행동: {kind}"
 

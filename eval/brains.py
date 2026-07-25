@@ -9,8 +9,10 @@
     - LocalBrain  : llama-server(EXAONE 1.2B). 지금까지의 우회를 그대로 유지.
     - GeminiBrain : 클라우드 모델. 규칙 전문 + JSON 스키마 강제 + 전체 이력.
 
-행동 어휘(tap/scroll/type/back/done)는 둘이 똑같다. agent.py의 execute가 어느
-브레인의 답이든 그대로 실행할 수 있어야 하기 때문이다.
+행동 어휘는 agent.py의 execute가 실행할 수 있는 것으로 제한된다. 어느 브레인의
+답이든 그대로 실행돼야 하기 때문이다. 다만 어휘를 다 줄 필요는 없어서, 지금은
+바로가기(open/task/launch)를 GeminiBrain에만 준다. LocalBrain은 tap/scroll
+같은 기본 동작만 쓴다.
 
 환경변수:
     LLM_URL         로컬 모델 서버 (기본 http://127.0.0.1:8080/v1/chat/completions)
@@ -39,7 +41,8 @@ GEMINI_URL = os.environ.get("GEMINI_URL") or (
 
 MAX_QUOTA_WAIT = 90          # 429 재시도에 쓸 누적 대기 상한(초)
 
-ACTIONS = ("tap", "scroll", "type", "back", "open", "done")
+ACTIONS = ("tap", "scroll", "type", "back", "open", "task", "launch",
+           "list_apps", "done")
 DIRECTIONS = ("up", "down", "left", "right")
 
 
@@ -238,8 +241,12 @@ CLOUD_SYSTEM_PROMPT = """당신은 안드로이드 휴대폰을 대신 조작하
 접근성 트리로 읽은 현재 화면을 받고, 목표에 한 걸음 다가가는 행동 하나를 고릅니다.
 화면에 보이는 것만 근거로 삼고, 보이지 않는 것을 추측해 지어내지 마세요."""
 
-CLOUD_RULES = """행동은 다음 여섯 가지뿐입니다.
-- open   : screen 필수. 안드로이드 설정 화면으로 한 번에 점프합니다.
+CLOUD_RULES = """행동은 다음뿐입니다. 위쪽 네 개를 먼저 고려하세요.
+- open      : screen 필수. 안드로이드 설정 화면으로 한 번에 점프합니다.
+- task      : task 필수. 전화·문자·검색·지도·알람 같은 기본 기능을 바로 실행합니다.
+              값이 필요한 작업은 value에, 문자 내용이나 알람 이름은 text에 씁니다.
+- launch    : app 필수. 설치된 앱을 이름으로 실행합니다(예: app="카카오톡").
+- list_apps : 어떤 앱이 깔려 있는지 모를 때. app에 검색어를 넣으면 걸러 봅니다.
 - tap    : node_id 필수. 화면에 실제로 있는 번호만 씁니다.
 - scroll : direction 필수(up/down/left/right).
 - type   : text 필수. 화면에 [type] 노드가 있을 때만 씁니다.
@@ -247,10 +254,12 @@ CLOUD_RULES = """행동은 다음 여섯 가지뿐입니다.
 - done   : 목표 화면에 도착했을 때. 마지막 한 번만.
 
 판단 지침:
-- 목표가 설정 화면과 관련된 것이면 화면을 눌러 찾아가지 말고 open을 먼저 쓰세요.
-  open 한 번이면 갈 곳을 tap과 scroll로 예닐곱 번 더듬는 것보다 빠르고 정확합니다.
-  단, open은 화면을 열어줄 뿐 설정을 바꾸지는 않습니다. 값을 바꾸려면 도착한
-  화면에서 tap 하세요.
+- 화면을 눌러 찾아가기 전에 open/task/launch로 한 번에 갈 수 있는지 먼저 보세요.
+  한 번의 점프가 tap과 scroll로 예닐곱 번 더듬는 것보다 빠르고 정확합니다.
+- 다만 이들은 화면을 열어줄 뿐 값을 바꾸거나 보내지는 않습니다. 설정을 바꾸거나
+  전화를 걸거나 문자를 보내는 마지막 동작은 도착한 화면에서 tap으로 하세요.
+  (task=dial은 번호만 채워줍니다. task=sms도 작성 화면까지만 엽니다)
+- 앱 이름이 확실하지 않으면 launch로 찍지 말고 list_apps로 먼저 확인하세요.
 - 각 줄의 [tap]/[type]/[scroll]은 그 노드에 할 수 있는 행동입니다.
 - 라벨이 목표와 글자 그대로 같지 않아도, 목표로 가는 길목이면 고르세요.
   (예: Wi-Fi는 "연결"이나 "네트워크" 안에, 글자 크기는 "디스플레이" 안에 있습니다)
@@ -277,9 +286,13 @@ CLOUD_SCHEMA = {
         "direction": {"type": "STRING", "enum": list(DIRECTIONS)},
         "text": {"type": "STRING"},
         "screen": {"type": "STRING"},
+        "task": {"type": "STRING"},
+        "value": {"type": "STRING"},
+        "app": {"type": "STRING"},
     },
     "required": ["reason", "action"],
-    "propertyOrdering": ["reason", "action", "node_id", "direction", "text", "screen"],
+    "propertyOrdering": ["reason", "action", "node_id", "direction", "text", "screen",
+                         "task", "value", "app"],
 }
 
 
