@@ -37,6 +37,8 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 GEMINI_URL = os.environ.get("GEMINI_URL") or (
     f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent")
 
+MAX_QUOTA_WAIT = 90          # 429 재시도에 쓸 누적 대기 상한(초)
+
 ACTIONS = ("tap", "scroll", "type", "back", "done")
 DIRECTIONS = ("up", "down", "left", "right")
 
@@ -249,8 +251,10 @@ CLOUD_RULES = """행동은 다음 다섯 가지뿐입니다.
   (예: Wi-Fi는 "연결"이나 "네트워크" 안에, 글자 크기는 "디스플레이" 안에 있습니다)
 - 목록이 화면에 다 안 보일 수 있습니다. 찾는 항목이 없으면 scroll down 하세요.
 - 화면 맨 위의 제목/헤더는 대개 누를 대상이 아닙니다. 목록 항목을 고르세요.
-- 최근 행동을 보고 같은 노드를 반복해 누르지 마세요. 화면이 안 바뀌었다면
-  그 경로는 틀린 것이니 다른 항목을 고르거나 scroll/back 하세요.
+- 지금까지 한 행동에는 각각 (화면 바뀜) 또는 (화면 그대로)가 붙어 있습니다.
+  (화면 그대로)는 그 행동이 아무 효과가 없었다는 뜻입니다. 같은 행동을 다시
+  하지 말고 다른 항목을 고르거나 반대 방향으로 scroll 하거나 back 하세요.
+  같은 방향 scroll이 연속 두 번 (화면 그대로)면 그 방향은 끝에 닿은 것입니다.
 - 목표한 화면에 이미 도착했다면 더 누르지 말고 done을 쓰세요.
 
 reason에는 "지금 화면이 무엇이고 왜 이 행동인지"를 한 문장으로 먼저 적으세요."""
@@ -314,7 +318,7 @@ class GeminiBrain:
 
     def _ask(self, user):
         headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
-        attempts = 5
+        attempts, waited = 5, 0.0
         for attempt in range(attempts):
             try:
                 return self._extract(
@@ -324,8 +328,16 @@ class GeminiBrain:
                 # 쉽게 걸리는데, 잠깐 기다리면 풀리므로 루프를 죽이지 않는다.
                 if error.status == 429 and attempt < attempts - 1:
                     wait = retry_delay(str(error), 20 * (attempt + 1))
+                    # 분당 한도면 한 번 기다리면 풀린다. 여러 번 기다려도 계속
+                    # 429라면 일당 한도라 아무리 기다려도 안 풀리므로, 몇 분씩
+                    # 멈춰 있지 말고 사람에게 상황을 알린다.
+                    if waited + wait > MAX_QUOTA_WAIT:
+                        raise BrainError(
+                            f"{error} (누적 {waited:.0f}초 대기했지만 계속 초과 — "
+                            f"분당이 아니라 일당 한도일 수 있습니다)", status=429)
                     print(f"  (할당량 초과 — {wait:.0f}초 기다렸다 재시도합니다)")
                     time.sleep(wait)
+                    waited += wait
                     continue
                 # thinkingConfig 형식은 모델 세대마다 다르다(2.5의 thinkingBudget을
                 # 3세대는 거부). 400 본문에 필드명이 안 나오므로, 이걸 보냈다가

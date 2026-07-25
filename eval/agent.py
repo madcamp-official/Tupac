@@ -41,6 +41,14 @@ MCP_PORT = int(os.environ.get("POCKETMCP_PORT", "9911"))
 MCP_URL = f"http://127.0.0.1:{MCP_PORT}/mcp"
 
 MAX_PROMPT_NODES = 45
+STALL_LIMIT = 3          # 화면이 이만큼 연속으로 안 바뀌면 중단한다
+
+
+def describe(observation):
+    """화면에 보이는 라벨을 한 줄로. 사람이 어느 화면인지 알아보게만 하면 된다."""
+    labels = [(n.get("text") or n.get("content_description") or "").strip()
+              for n in observation.get("nodes", [])]
+    return " / ".join(label for label in labels if label)[:150]
 
 
 def mcp(name, arguments):
@@ -107,8 +115,15 @@ def execute(action, observation, dry):
         result = mcp("device_click_node",
                      {"snapshot_id": observation["snapshot_id"], "node_id": node_id})
         if result.get("success"):
-            return (f"성공: {node_id} 눌림"
-                    f"{' (화면 바뀜)' if result.get('screen_changed') else ' (화면 그대로)'}")
+            # 화면이 바뀌었는지는 여기서 붙이지 않는다. 다음 스텝의 observe와
+            # 지문을 비교해 run()이 모든 행동에 똑같은 방식으로 판정한다.
+            return f"성공: {node_id} 눌림"
+        # 판단하는 사이에 화면이 변해 서버가 클릭을 거부한 경우다. 모델의 판단이
+        # 틀린 게 아니므로 "실패"로 적으면 안 된다(다음 스텝에서 멀쩡한 선택지를
+        # 피하게 된다). 화면에 시계가 있으면 1분만 지나도 지문이 바뀌므로,
+        # 모델 응답이 느릴 때 반드시 발생한다.
+        if result.get("error") in ("SCREEN_CHANGED", "STALE_SNAPSHOT"):
+            return "무효: 판단하는 사이 화면이 바뀌어 취소됨. 판단 자체는 문제없음"
         return f"실패: {result.get('error') or result.get('message')}"
 
     if kind == "scroll":
@@ -129,10 +144,40 @@ def execute(action, observation, dry):
 def run(goal, brain, max_steps, all_nodes, dry):
     print(f"목표: {goal}  (brain: {brain.name})\n{'=' * 60}")
     history = []
+    previous_id = None
+    pending = None          # 직전 행동의 이력. 화면이 바뀌었는지는 아직 모른다.
+    stalled = 0             # 화면이 연속으로 안 바뀐 횟수
     for step in range(1, max_steps + 1):
         observation = mcp("device_observe", {"max_nodes": 500})
         if "snapshot_id" not in observation:
             print("observe 실패:", observation)
+            return
+
+        # 화면 변화 판정을 여기서 한다. 행동 직후에 폰에게 물어보면 전환
+        # 애니메이션 중이라 부정확하고, scroll·back은 애초에 알려주지도 않는다.
+        # 다음 스텝의 observe(전환이 끝난 뒤)와 지문을 비교하는 게 정확하고,
+        # 모든 행동에 똑같이 적용된다.
+        #
+        # 이 신호가 없으면 모델은 헛스크롤을 반복한다(실측: 설정 화면에서
+        # scroll up을 3연속). 이력에 "성공: 스크롤함"만 남아서 아무 일도
+        # 일어나지 않았다는 걸 알 방법이 없었다.
+        if pending is not None:
+            changed = observation["snapshot_id"] != previous_id
+            history.append(f"{pending} ({'화면 바뀜' if changed else '화면 그대로'})")
+            stalled = 0 if changed else stalled + 1
+            if not changed:
+                print(f"     ↳ 화면이 바뀌지 않았습니다 ({stalled}회 연속)")
+            pending = None
+        previous_id = observation["snapshot_id"]
+
+        # 아무것도 안 바뀌는 상태로 계속 도는 건 진전이 아니라 낭비다. 스텝마다
+        # 모델을 부르므로 할당량까지 태운다. 잠금화면처럼 에이전트가 원리상
+        # 벗어날 수 없는 화면에서 특히 그렇다(실측: 12스텝 내내 잠금 해제 시도).
+        if stalled >= STALL_LIMIT:
+            print(f"{'=' * 60}\n{stalled}스텝 연속으로 화면이 전혀 바뀌지 않아 중단합니다.")
+            print(f"마지막 화면: [{observation['package_name']}] "
+                  f"{describe(observation)}")
+            print("→ 폰이 잠겨 있거나, 에이전트가 조작할 수 없는 화면일 수 있습니다.")
             return
 
         screen = render_screen(observation, all_nodes)
@@ -160,17 +205,15 @@ def run(goal, brain, max_steps, all_nodes, dry):
 
         outcome = execute(action, observation, dry)
         print(f"     결과: {outcome}")
-        history.append(f"step{step}: {action['action']} {detail} → {outcome}")
+        # 아직 history에 넣지 않는다. 다음 observe로 화면 변화를 확인한 뒤 붙인다.
+        pending = f"step{step}: {action['action']} {detail} → {outcome}"
         time.sleep(1.2)          # 화면 전환이 끝날 때까지 잠깐 기다린다
 
     # done을 못 뽑았다고 실패는 아니다. 목표를 이미 이뤘는데도 완료 선언만
     # 못 하는 경우가 잦아, 마지막 화면을 보여주고 사람이 판단하게 한다.
     final = mcp("device_observe", {"max_nodes": 500})
-    labels = [(n.get("text") or n.get("content_description") or "").strip()
-              for n in final.get("nodes", [])]
-    preview = " / ".join(l for l in labels if l)[:150]
     print(f"{'=' * 60}\n{max_steps}스텝을 모두 사용했습니다 (모델이 done을 선언하지 않음).")
-    print(f"마지막 화면: [{final.get('package_name', '?')}] {preview}")
+    print(f"마지막 화면: [{final.get('package_name', '?')}] {describe(final)}")
     print("→ 목표가 달성됐는지 폰 화면으로 확인하세요.")
 
 
