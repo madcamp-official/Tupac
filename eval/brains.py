@@ -9,10 +9,10 @@
     - LocalBrain  : llama-server(EXAONE 1.2B). 지금까지의 우회를 그대로 유지.
     - GeminiBrain : 클라우드 모델. 규칙 전문 + JSON 스키마 강제 + 전체 이력.
 
-행동 어휘는 agent.py의 execute가 실행할 수 있는 것으로 제한된다. 어느 브레인의
-답이든 그대로 실행돼야 하기 때문이다. 다만 어휘를 다 줄 필요는 없어서, 지금은
-바로가기(open/task/launch)를 GeminiBrain에만 준다. LocalBrain은 tap/scroll
-같은 기본 동작만 쓴다.
+행동 어휘(tap/scroll/type/back/open/task/launch/done)는 둘이 똑같다. agent.py의
+execute가 어느 브레인의 답이든 그대로 실행할 수 있어야 하기 때문이다. 다만
+같은 어휘를 설명하는 방식은 다르다. Gemini에는 키마다 한글 설명이 붙은 목록을
+주고, 1.2B에는 키만 준다(설명까지 주면 프롬프트가 화면 목록을 밀어낸다).
 
 환경변수:
     LLM_URL         로컬 모델 서버 (기본 http://127.0.0.1:8080/v1/chat/completions)
@@ -67,6 +67,32 @@ def retry_delay(message, fallback):
     return fallback
 
 
+def compact_shortcuts(shortcuts):
+    """바로가기 목록에서 설명을 걷어내고 키만 남긴다.
+
+    Gemini에게 주는 원본은 키마다 한글 설명이 붙어 1000자가 넘는다. 1.2B에
+    그대로 주면 프롬프트가 화면 목록을 밀어내 정작 무엇을 누를지 못 고른다.
+    작은 모델에는 어휘만 주고, 무엇을 고를지는 목표 문장과 대조해 판단하게 한다.
+    """
+    lines = []
+    for block in shortcuts.split("\n\n"):
+        head, _, body = block.partition(":\n")
+        # 설명을 지우는 방식(괄호 안 삭제)은 못 쓴다. 설명 안에 또 괄호가 있어서
+        # ("dial(전화 앱에 번호 입력 (value=전화번호). 걸지는 않음)") 안쪽만 지워지고
+        # 바깥 껍데기가 남는다. 키를 직접 뽑는 게 안전하다: 줄 첫머리나 쉼표 뒤에
+        # 오는 영문 소문자 낱말 + 여는 괄호.
+        keys = ", ".join(re.findall(r"(?:^|,\s*)([a-z_][a-z0-9_]*)\(", body))
+        if not keys:
+            continue
+        if "screen" in head:
+            lines.append(f"open 화면 — 쓸 수 있는 화면: {keys}")
+        elif "task" in head:
+            lines.append(f"task 작업 값 — 쓸 수 있는 작업: {keys}")
+    if lines:
+        lines.append("launch 앱이름")
+    return "\n".join(lines)
+
+
 def _verbose(title, body):
     if os.environ.get("AGENT_VERBOSE"):
         print(f"----- {title} -----\n{body}\n{'-' * 30}")
@@ -99,7 +125,7 @@ def parse_action(raw):
     # 1순위: "tap node_41" 같은 한 줄 형식. 작은 모델은 JSON 문법(따옴표·중괄호·
     # 쉼표)을 못 지켜 구조가 무너지는 일이 잦아, 가장 쓰기 쉬운 형식을 먼저 본다.
     first_line = raw.strip().splitlines()[0].strip() if raw.strip() else ""
-    match = re.match(r"^[\s\-*`]*(tap|scroll|type|back|done)\b[:\s]*(.*)$",
+    match = re.match(r"^[\s\-*`]*(tap|scroll|type|back|open|task|launch|done)\b[:\s]*(.*)$",
                      first_line, re.IGNORECASE)
     if match:
         verb, arg = match.group(1).lower(), match.group(2).strip().strip('"\'`')
@@ -113,6 +139,20 @@ def parse_action(raw):
         elif verb == "type":
             if arg:
                 return {"action": "type", "text": arg}
+        elif verb == "open":
+            if arg:
+                return {"action": "open", "screen": arg.split()[0]}
+        elif verb == "task":
+            # "task alarm 07:30" — 첫 토큰이 작업 이름, 나머지가 값.
+            head, _, rest = arg.partition(" ")
+            if head:
+                found = {"action": "task", "task": head}
+                if rest.strip():
+                    found["value"] = rest.strip()
+                return found
+        elif verb == "launch":
+            if arg:
+                return {"action": "launch", "app": arg}
         else:
             return {"action": verb}
 
@@ -154,6 +194,7 @@ LOCAL_SYSTEM_PROMPT = "휴대폰 화면을 조작하는 도우미. 한 줄로만
 LOCAL_RULES = """휴대폰 화면을 보고, 목표에 가까워지는 다음 행동 하나만 고르세요.
 
 규칙:
+- 바로가기(open/task/launch)로 한 번에 갈 수 있으면 그것부터 쓰세요.
 - 홈 화면이라면 scroll down을 통해 검색을 tap 하세요.
 - 목표와 관련된 항목이 화면에 있으면 그것을 tap 하세요.
 - 라벨이 목표와 똑같지 않아도 목표로 가는 길목이면 고르세요.
@@ -174,7 +215,7 @@ class LocalBrain:
     def __init__(self, url=LLM_URL):
         self.url = url
 
-    def _instructions(self, observation):
+    def _instructions(self, observation, shortcuts=""):
         """현재 화면에서 실제로 가능한 선택지만 제시한다.
 
         고정된 예시 목록을 주면 작은 모델이 예시를 그대로 베낀다(실측: 입력창이
@@ -189,6 +230,9 @@ class LocalBrain:
         options = [f"tap {example}", "scroll down", "scroll up", "back", "done"]
         if any(n["editable"] for n in observation["nodes"]):
             options.insert(1, "type 넣을글자")
+        menu = compact_shortcuts(shortcuts)
+        if menu:
+            options = menu.splitlines() + options
         return (f"{LOCAL_RULES}\n\n답은 아래 형태 중 하나로 한 줄만 쓰세요. 설명하지 마세요.\n"
                 f"tap 뒤에는 화면에 있는 node 번호를 쓰세요.\n\n" + "\n".join(options))
 
@@ -207,7 +251,7 @@ class LocalBrain:
     def decide(self, goal, screen, observation, history, shortcuts=""):
         recent = "\n".join(history[-self.max_history:]) or "(아직 없음)"
         # 마지막 줄을 "답:"으로 끝내면 모델이 곧바로 행동부터 쓰기 시작한다.
-        user = (f"{self._instructions(observation)}\n\n목표: {goal}\n\n{screen}\n\n"
+        user = (f"{self._instructions(observation, shortcuts)}\n\n목표: {goal}\n\n{screen}\n\n"
                 f"최근 행동:\n{recent}\n\n답:")
         _verbose("프롬프트(local)", user)
 
