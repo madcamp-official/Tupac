@@ -1,86 +1,46 @@
-"""로컬 LLM 에이전트 루프 — 목표를 주면 스스로 observe→판단→act를 반복한다.
+"""에이전트 루프 — 목표를 주면 스스로 observe→판단→act를 반복한다.
 
 구조:
     사용자 목표 → [모델(두뇌)] ⇄ [폰(MCP 도구 서버)]
-    매 스텝: observe로 현재 화면을 읽고, 모델이 다음 행동 하나를 JSON으로 정한 뒤 실행.
+    매 스텝: observe로 현재 화면을 읽고, 모델이 다음 행동 하나를 정한 뒤 실행.
 
-준비 (터미널 2개):
-  # 1) 모델 서버 (한 번 띄워두면 계속 재사용)
-  llama-server -m eval/models/EXAONE-4.0-1.2B-Q4_K_M.gguf -c 4096 --port 8080
+    판단은 brains.py의 브레인이 맡는다. 이 파일은 폰과 이야기하고(mcp), 화면을
+    글로 옮기고(render_screen), 행동을 실행하는(execute) 일만 한다.
 
-  # 2) 에이전트 실행
+준비:
+  # 폰 연결 (공통)
   export TOKEN=$(adb shell run-as com.example.mobileguiagent \
       cat /data/data/com.example.mobileguiagent/shared_prefs/pocket_mcp_auth.xml \
       | sed -n 's/.*name="bearer_token">\\([^<]*\\)<.*/\\1/p')
   adb forward tcp:9911 tcp:8765
+
+  # A) 로컬 모델 (기본) — 모델 서버를 따로 띄워둔다
+  llama-server -m eval/models/EXAONE-4.0-1.2B-Q4_K_M.gguf -c 4096 --port 8080
   python3 eval/agent.py "와이파이 켜줘"
 
+  # B) Gemini
+  export GEMINI_API_KEY=...
+  python3 eval/agent.py --brain gemini "와이파이 켜줘"
+
 옵션:
+  --brain NAME   판단에 쓸 모델: local(기본) | gemini
   --steps N      최대 스텝 수 (기본 12)
   --all-nodes    라벨 없는 노드까지 모델에게 보여준다 (기본은 라벨 있는 것만)
   --dry          모델 판단만 보고 실제로 폰을 조작하지는 않는다
 """
 import json
 import os
-import re
 import sys
 import time
 import urllib.error
 import urllib.request
 
+import brains
+
 MCP_PORT = int(os.environ.get("POCKETMCP_PORT", "9911"))
 MCP_URL = f"http://127.0.0.1:{MCP_PORT}/mcp"
-LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8080/v1/chat/completions")
 
-MAX_HISTORY = 3          # 1.2B 모델은 긴 이력을 감당 못 하므로 최근 것만 보여준다
 MAX_PROMPT_NODES = 45
-
-# 작은 모델(1.2B)은 system 역할을 약하게 취급해 긴 지시를 무시한다(실측: 화면과
-# 무관한 조언을 늘어놓음). 지시는 짧게 줄여 user 메시지 안에 넣는다.
-SYSTEM_PROMPT = "휴대폰 화면을 조작하는 도우미. 한 줄로만 답한다."
-
-RULES = """휴대폰 화면을 보고, 목표에 가까워지는 다음 행동 하나만 고르세요.
-
-규칙:
-- 목표와 관련된 항목이 화면에 있으면 그것을 tap 하세요.
-- 라벨이 목표와 똑같지 않아도 목표로 가는 길목이면 고르세요.
-  (글자 크기 → "디스플레이", Wi-Fi → "연결" 안에 있음)
-- 목록이 화면에 다 안 보일 수 있습니다. 찾는 항목이 없으면 scroll down 하세요.
-- 화면 맨 위의 제목은 누르지 마세요. 목록 항목을 고르세요.
-- 최근 행동에서 이미 누른 node를 다시 누르지 마세요.
-- 목표한 화면에 도착했으면 더 누르지 말고 done을 쓰세요.
-  (예: 목표가 "글자 크게"인데 화면에 글자 크기 조절이 보이면 done)"""
-
-
-def build_instructions(observation):
-    """현재 화면에서 실제로 가능한 선택지만 제시한다.
-
-    고정된 예시 목록을 주면 작은 모델이 예시를 그대로 베낀다(실측: 입력창이
-    없는 화면에서 예시의 "type 와이파이"를 여섯 스텝 내내 반복). 화면에
-    입력창이 있을 때만 type을 노출하고, 예시 node 번호도 실제 화면 것을 쓴다.
-    """
-    example = next(
-        (n["id"] for n in observation["nodes"]
-         if (n.get("text") or n.get("content_description"))),
-        "node_1",
-    )
-    options = [f"tap {example}", "scroll down", "scroll up", "back", "done"]
-    if any(n["editable"] for n in observation["nodes"]):
-        options.insert(1, "type 넣을글자")
-    return (f"{RULES}\n\n답은 아래 형태 중 하나로 한 줄만 쓰세요. 설명하지 마세요.\n"
-            f"tap 뒤에는 화면에 있는 node 번호를 쓰세요.\n\n" + "\n".join(options))
-
-ACTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "action": {"type": "string", "enum": ["tap", "scroll", "type", "back", "done"]},
-        "node_id": {"type": "string"},
-        "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
-        "text": {"type": "string"},
-        "reason": {"type": "string"},
-    },
-    "required": ["action"],
-}
 
 
 def mcp(name, arguments):
@@ -98,26 +58,6 @@ def mcp(name, arguments):
         sys.exit(f"폰 서버 연결 실패({MCP_URL}): {error}\n"
                  f"  adb forward --list 확인 → 없으면 adb forward tcp:{MCP_PORT} tcp:8765")
     return json.loads(outer["result"]["content"][0]["text"])
-
-
-def ask_model(messages):
-    body = json.dumps({
-        "messages": messages,
-        "temperature": 0.1,          # EXAONE 카드 권장: 한국어는 낮은 온도
-        "max_tokens": 60,
-        # json_schema로 문법을 강제하면 모델이 생각하기 전에 action부터 확정하게 되어
-        # (실측) 계속 scroll만 고르는 문제가 있었다. 형식은 프롬프트로 유도하고
-        # 파싱은 parse_action에서 관대하게 처리한다.
-    }).encode()
-    req = urllib.request.Request(
-        LLM_URL, data=body, headers={"Content-Type": "application/json"})
-    try:
-        data = json.load(urllib.request.urlopen(req, timeout=180))
-    except urllib.error.URLError as error:
-        sys.exit(f"모델 서버 연결 실패({LLM_URL}): {error}\n"
-                 f"  llama-server -m eval/models/EXAONE-4.0-1.2B-Q4_K_M.gguf "
-                 f"-c 4096 --port 8080 을 먼저 실행하세요.")
-    return data["choices"][0]["message"]["content"]
 
 
 def render_screen(observation, all_nodes):
@@ -147,63 +87,6 @@ def render_screen(observation, all_nodes):
             lines.append(f"... ({observation['meaningful_node_count'] - shown} more, scroll to see)")
             break
     return "\n".join(lines)
-
-
-def parse_action(raw):
-    """모델 응답에서 행동을 뽑아낸다.
-
-    작은 모델에 JSON 형식을 문법으로 강제하면 생각하기 전에 action부터 확정해
-    판단 품질이 무너진다(실측). 그래서 형식은 프롬프트로만 유도하고, 자연어로
-    답하더라도 여기서 관대하게 해석한다.
-    """
-    # 1순위: "tap node_41" 같은 한 줄 형식. 작은 모델은 JSON 문법(따옴표·중괄호·
-    # 쉼표)을 못 지켜 구조가 무너지는 일이 잦아, 가장 쓰기 쉬운 형식을 먼저 본다.
-    first_line = raw.strip().splitlines()[0].strip() if raw.strip() else ""
-    match = re.match(r"^[\s\-*`]*(tap|scroll|type|back|done)\b[:\s]*(.*)$",
-                     first_line, re.IGNORECASE)
-    if match:
-        verb, arg = match.group(1).lower(), match.group(2).strip().strip('"\'`')
-        if verb == "tap":
-            node = re.search(r"node_\d+", arg) or re.search(r"node_\d+", raw)
-            if node:
-                return {"action": "tap", "node_id": node.group()}
-        elif verb == "scroll":
-            direction = next((d for d in ("up", "down", "left", "right")
-                              if d in arg.lower()), "down")
-            return {"action": "scroll", "direction": direction}
-        elif verb == "type":
-            if arg:
-                return {"action": "type", "text": arg}
-        else:
-            return {"action": verb}
-
-    for candidate in (raw, raw[raw.find("{"):raw.rfind("}") + 1] if "{" in raw else ""):
-        if not candidate:
-            continue
-        try:
-            parsed = json.loads(candidate)
-            if isinstance(parsed, dict) and "action" in parsed:
-                return parsed
-        except json.JSONDecodeError:
-            pass
-
-    # 자연어 응답 해석: 언급된 node_id + 행동 키워드.
-    # done은 여기서 추론하지 않는다. "이미 ~했지만" 같은 흔한 표현을 목표 달성으로
-    # 오인해 루프가 조기 종료된 사례가 있었다. done은 명시적 JSON일 때만 인정한다.
-    text = raw.lower()
-    node_ids = re.findall(r"node_\d+", raw)
-    if any(k in text for k in ("탭", "클릭", "누르", "선택", "tap")) and node_ids:
-        return {"action": "tap", "node_id": node_ids[0], "reason": raw[:120]}
-    if any(k in text for k in ("스크롤", "scroll", "스와이프", "내려", "올려")):
-        direction = "down"
-        for word, value in (("위", "up"), ("아래", "down"), ("오른", "right"), ("왼", "left")):
-            if word in raw:
-                direction = value
-                break
-        return {"action": "scroll", "direction": direction, "reason": raw[:120]}
-    if node_ids:                      # 행동 표현이 없어도 노드를 지목했으면 tap으로 본다
-        return {"action": "tap", "node_id": node_ids[0], "reason": raw[:120]}
-    return None
 
 
 def execute(action, observation, dry):
@@ -238,8 +121,8 @@ def execute(action, observation, dry):
     return f"알 수 없는 행동: {kind}"
 
 
-def run(goal, max_steps, all_nodes, dry):
-    print(f"목표: {goal}\n{'=' * 60}")
+def run(goal, brain, max_steps, all_nodes, dry):
+    print(f"목표: {goal}  (brain: {brain.name})\n{'=' * 60}")
     history = []
     for step in range(1, max_steps + 1):
         observation = mcp("device_observe", {"max_nodes": 500})
@@ -248,36 +131,12 @@ def run(goal, max_steps, all_nodes, dry):
             return
 
         screen = render_screen(observation, all_nodes)
-        recent = "\n".join(history[-MAX_HISTORY:]) or "(아직 없음)"
-        # 마지막 줄을 "답:"으로 끝내면 모델이 곧바로 행동부터 쓰기 시작한다.
-        user = (f"{build_instructions(observation)}\n\n목표: {goal}\n\n{screen}\n\n"
-                f"최근 행동:\n{recent}\n\n답:")
-
-        if os.environ.get("AGENT_VERBOSE"):
-            print(f"----- 프롬프트(step {step}) -----\n{user}\n{'-' * 30}")
-
-        messages = [{"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user}]
         started = time.time()
-        raw = ask_model(messages)
+        try:
+            action, raw = brain.decide(goal, screen, observation, history)
+        except brains.BrainError as error:
+            sys.exit(f"모델 호출 실패: {error}\n  {brain.hint()}")
         elapsed = time.time() - started
-
-        if os.environ.get("AGENT_VERBOSE"):
-            print(f"모델 원문: {raw}")
-
-        action = parse_action(raw)
-        if action is None:
-            # 형식이 무너진 응답 하나로 루프 전체를 끝내지 않는다. 형식만 다시
-            # 일러주고 한 번 더 물어본다(예: 인자 없는 "type"만 답한 경우).
-            retry = ask_model(messages + [
-                {"role": "assistant", "content": raw},
-                {"role": "user", "content":
-                 "형식이 틀렸습니다. 아래 중 하나를 그대로 한 줄만 쓰세요.\n"
-                 "tap node_번호 / scroll down / scroll up / back / done"},
-            ])
-            if os.environ.get("AGENT_VERBOSE"):
-                print(f"재시도 원문: {retry}")
-            action = parse_action(retry)
 
         if action is None:
             print(f"[{step}] 응답을 해석하지 못해 이 스텝을 건너뜁니다: {raw[:120]}")
@@ -310,18 +169,41 @@ def run(goal, max_steps, all_nodes, dry):
     print("→ 목표가 달성됐는지 폰 화면으로 확인하세요.")
 
 
-args = [a for a in sys.argv[1:] if not a.startswith("--")]
-flags = {a for a in sys.argv[1:] if a.startswith("--")}
-if not args:
-    print(__doc__)
-    sys.exit(0)
+def parse_argv(argv):
+    """--flag / --flag VALUE 와 목표 문장을 갈라낸다."""
+    options = {"brain": "local", "steps": 12, "all_nodes": False, "dry": False}
+    words = []
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--brain" and index + 1 < len(argv):
+            options["brain"] = argv[index + 1]
+            index += 2
+        elif token == "--steps" and index + 1 < len(argv):
+            options["steps"] = int(argv[index + 1])
+            index += 2
+        elif token == "--all-nodes":
+            options["all_nodes"] = True
+            index += 1
+        elif token == "--dry":
+            options["dry"] = True
+            index += 1
+        elif token.startswith("--"):
+            sys.exit(f"알 수 없는 옵션: {token}\n{__doc__}")
+        else:
+            words.append(token)
+            index += 1
+    options["goal"] = " ".join(words)
+    return options
 
-steps = 12
-for flag in list(flags):
-    if flag.startswith("--steps"):
-        idx = sys.argv.index(flag)
-        if idx + 1 < len(sys.argv):
-            steps = int(sys.argv[idx + 1])
-            args = [a for a in args if a != sys.argv[idx + 1]]
 
-run(" ".join(args), steps, "--all-nodes" in flags, "--dry" in flags)
+if __name__ == "__main__":
+    parsed = parse_argv(sys.argv[1:])
+    if not parsed["goal"]:
+        print(__doc__)
+        sys.exit(0)
+    try:
+        selected = brains.make_brain(parsed["brain"])
+    except brains.BrainError as error:
+        sys.exit(str(error))
+    run(parsed["goal"], selected, parsed["steps"], parsed["all_nodes"], parsed["dry"])

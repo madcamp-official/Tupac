@@ -1,0 +1,403 @@
+"""두뇌(모델) 어댑터 — 같은 화면을 모델 급에 맞는 방식으로 물어본다.
+
+왜 나눠놓는가:
+    1.2B 로컬 모델을 붙들고 만든 우회들(프롬프트를 짧게 자르기, 선택지를 화면에서
+    뽑아 제시하기, 형식이 무너진 답을 관대하게 해석하기)은 큰 모델에게는 오히려
+    해롭다. 규칙을 줄여놓으면 판단 근거가 사라지고, 자유 형식 파싱은 틀릴 여지만
+    남긴다. 그래서 프롬프트와 파싱을 통째로 브레인 안에 가둬 서로 간섭하지 않게 한다.
+
+    - LocalBrain  : llama-server(EXAONE 1.2B). 지금까지의 우회를 그대로 유지.
+    - GeminiBrain : 클라우드 모델. 규칙 전문 + JSON 스키마 강제 + 전체 이력.
+
+행동 어휘(tap/scroll/type/back/done)는 둘이 똑같다. agent.py의 execute가 어느
+브레인의 답이든 그대로 실행할 수 있어야 하기 때문이다.
+
+환경변수:
+    LLM_URL         로컬 모델 서버 (기본 http://127.0.0.1:8080/v1/chat/completions)
+    GEMINI_API_KEY  Gemini API 키 (--brain gemini 일 때 필수)
+    GEMINI_MODEL    모델 이름 (기본 gemini-2.5-flash)
+    GEMINI_URL      엔드포인트 직접 지정 (테스트용 스텁을 붙일 때)
+    GEMINI_THINKING 사고 설정 JSON. 기본은 안 보냄(모델 기본값을 따름).
+                    예: GEMINI_THINKING='{"thinkingLevel":"low"}'
+    AGENT_VERBOSE   프롬프트와 모델 원문을 그대로 출력
+"""
+import json
+import os
+import re
+import time
+import urllib.error
+import urllib.request
+
+LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8080/v1/chat/completions")
+# flash 계열을 쓴다. UI 에이전트는 스텝마다 모델을 부르므로 지연이 곧 체감 속도다.
+# 쓸 수 있는 모델은 계정마다 다르다. 404가 나면 아래로 확인:
+#   curl -s -H "x-goog-api-key: $GEMINI_API_KEY" \
+#     https://generativelanguage.googleapis.com/v1beta/models
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+GEMINI_URL = os.environ.get("GEMINI_URL") or (
+    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent")
+
+ACTIONS = ("tap", "scroll", "type", "back", "done")
+DIRECTIONS = ("up", "down", "left", "right")
+
+
+class BrainError(Exception):
+    """모델 호출 실패. agent.py가 사람이 읽을 안내와 함께 종료한다."""
+
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status         # HTTP 상태 코드 (429 재시도 판단에 쓴다)
+
+
+def _verbose(title, body):
+    if os.environ.get("AGENT_VERBOSE"):
+        print(f"----- {title} -----\n{body}\n{'-' * 30}")
+
+
+def _post_json(url, payload, headers, timeout):
+    """POST 후 JSON 응답. 실패 시 서버가 준 본문까지 붙여 올린다.
+
+    HTTPError는 URLError의 하위 클래스라 그냥 잡으면 응답 본문이 사라진다.
+    API 키 오류·스키마 거절 같은 건 그 본문에만 이유가 적혀 있어 따로 읽는다.
+    """
+    request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace").strip()
+        raise BrainError(f"HTTP {error.code} — {detail[:600]}", status=error.code) from error
+    except urllib.error.URLError as error:
+        raise BrainError(f"연결 실패({url}): {error.reason}") from error
+
+
+def parse_action(raw):
+    """모델 응답에서 행동을 뽑아낸다 (주로 로컬 모델용).
+
+    작은 모델에 JSON 형식을 문법으로 강제하면 생각하기 전에 action부터 확정해
+    판단 품질이 무너진다(실측). 그래서 형식은 프롬프트로만 유도하고, 자연어로
+    답하더라도 여기서 관대하게 해석한다.
+    """
+    # 1순위: "tap node_41" 같은 한 줄 형식. 작은 모델은 JSON 문법(따옴표·중괄호·
+    # 쉼표)을 못 지켜 구조가 무너지는 일이 잦아, 가장 쓰기 쉬운 형식을 먼저 본다.
+    first_line = raw.strip().splitlines()[0].strip() if raw.strip() else ""
+    match = re.match(r"^[\s\-*`]*(tap|scroll|type|back|done)\b[:\s]*(.*)$",
+                     first_line, re.IGNORECASE)
+    if match:
+        verb, arg = match.group(1).lower(), match.group(2).strip().strip('"\'`')
+        if verb == "tap":
+            node = re.search(r"node_\d+", arg) or re.search(r"node_\d+", raw)
+            if node:
+                return {"action": "tap", "node_id": node.group()}
+        elif verb == "scroll":
+            direction = next((d for d in DIRECTIONS if d in arg.lower()), "down")
+            return {"action": "scroll", "direction": direction}
+        elif verb == "type":
+            if arg:
+                return {"action": "type", "text": arg}
+        else:
+            return {"action": verb}
+
+    for candidate in (raw, raw[raw.find("{"):raw.rfind("}") + 1] if "{" in raw else ""):
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict) and "action" in parsed:
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    # 자연어 응답 해석: 언급된 node_id + 행동 키워드.
+    # done은 여기서 추론하지 않는다. "이미 ~했지만" 같은 흔한 표현을 목표 달성으로
+    # 오인해 루프가 조기 종료된 사례가 있었다. done은 명시적 JSON일 때만 인정한다.
+    text = raw.lower()
+    node_ids = re.findall(r"node_\d+", raw)
+    if any(k in text for k in ("탭", "클릭", "누르", "선택", "tap")) and node_ids:
+        return {"action": "tap", "node_id": node_ids[0], "reason": raw[:120]}
+    if any(k in text for k in ("스크롤", "scroll", "스와이프", "내려", "올려")):
+        direction = "down"
+        for word, value in (("위", "up"), ("아래", "down"), ("오른", "right"), ("왼", "left")):
+            if word in raw:
+                direction = value
+                break
+        return {"action": "scroll", "direction": direction, "reason": raw[:120]}
+    if node_ids:                      # 행동 표현이 없어도 노드를 지목했으면 tap으로 본다
+        return {"action": "tap", "node_id": node_ids[0], "reason": raw[:120]}
+    return None
+
+
+# ─────────────────────────────── 로컬 (1.2B) ───────────────────────────────
+
+# 작은 모델(1.2B)은 system 역할을 약하게 취급해 긴 지시를 무시한다(실측: 화면과
+# 무관한 조언을 늘어놓음). 지시는 짧게 줄여 user 메시지 안에 넣는다.
+LOCAL_SYSTEM_PROMPT = "휴대폰 화면을 조작하는 도우미. 한 줄로만 답한다."
+
+LOCAL_RULES = """휴대폰 화면을 보고, 목표에 가까워지는 다음 행동 하나만 고르세요.
+
+규칙:
+- 홈 화면이라면 scroll down을 통해 검색을 tap 하세요.
+- 목표와 관련된 항목이 화면에 있으면 그것을 tap 하세요.
+- 라벨이 목표와 똑같지 않아도 목표로 가는 길목이면 고르세요.
+- 목록이 화면에 다 안 보일 수 있습니다. 찾는 항목이 없으면 scroll down 하세요.
+- 화면 맨 위의 제목은 누르지 마세요. 목록 항목을 고르세요.
+- 최근 행동에서 이미 누른 node를 다시 누르지 마세요.
+- 목표한 화면에 도착했으면 더 누르지 말고 done을 쓰세요.
+  (예: 목표가 "글자 크게"인데 화면에 글자 크기 조절이 보이면 done)"""
+
+
+class LocalBrain:
+    """llama-server에 붙는 소형 모델. 프롬프트는 짧게, 파싱은 관대하게."""
+
+    name = "local"
+    online = False                # 화면 텍스트가 기기 밖으로 나가지 않는다
+    max_history = 3               # 1.2B는 긴 이력을 감당 못 하므로 최근 것만
+
+    def __init__(self, url=LLM_URL):
+        self.url = url
+
+    def _instructions(self, observation):
+        """현재 화면에서 실제로 가능한 선택지만 제시한다.
+
+        고정된 예시 목록을 주면 작은 모델이 예시를 그대로 베낀다(실측: 입력창이
+        없는 화면에서 예시의 "type 와이파이"를 여섯 스텝 내내 반복). 화면에
+        입력창이 있을 때만 type을 노출하고, 예시 node 번호도 실제 화면 것을 쓴다.
+        """
+        example = next(
+            (n["id"] for n in observation["nodes"]
+             if (n.get("text") or n.get("content_description"))),
+            "node_1",
+        )
+        options = [f"tap {example}", "scroll down", "scroll up", "back", "done"]
+        if any(n["editable"] for n in observation["nodes"]):
+            options.insert(1, "type 넣을글자")
+        return (f"{LOCAL_RULES}\n\n답은 아래 형태 중 하나로 한 줄만 쓰세요. 설명하지 마세요.\n"
+                f"tap 뒤에는 화면에 있는 node 번호를 쓰세요.\n\n" + "\n".join(options))
+
+    def _ask(self, messages):
+        payload = {
+            "messages": messages,
+            "temperature": 0.1,      # EXAONE 카드 권장: 한국어는 낮은 온도
+            "max_tokens": 60,
+            # json_schema로 문법을 강제하면 모델이 생각하기 전에 action부터 확정하게 되어
+            # (실측) 계속 scroll만 고르는 문제가 있었다. 형식은 프롬프트로 유도하고
+            # 파싱은 parse_action에서 관대하게 처리한다.
+        }
+        data = _post_json(self.url, payload, {"Content-Type": "application/json"}, timeout=180)
+        return data["choices"][0]["message"]["content"]
+
+    def decide(self, goal, screen, observation, history):
+        recent = "\n".join(history[-self.max_history:]) or "(아직 없음)"
+        # 마지막 줄을 "답:"으로 끝내면 모델이 곧바로 행동부터 쓰기 시작한다.
+        user = (f"{self._instructions(observation)}\n\n목표: {goal}\n\n{screen}\n\n"
+                f"최근 행동:\n{recent}\n\n답:")
+        _verbose("프롬프트(local)", user)
+
+        messages = [{"role": "system", "content": LOCAL_SYSTEM_PROMPT},
+                    {"role": "user", "content": user}]
+        raw = self._ask(messages)
+        _verbose("모델 원문(local)", raw)
+        action = parse_action(raw)
+        if action is not None:
+            return action, raw
+
+        # 형식이 무너진 응답 하나로 루프 전체를 끝내지 않는다. 형식만 다시
+        # 일러주고 한 번 더 물어본다(예: 인자 없는 "type"만 답한 경우).
+        retry = self._ask(messages + [
+            {"role": "assistant", "content": raw},
+            {"role": "user", "content":
+             "형식이 틀렸습니다. 아래 중 하나를 그대로 한 줄만 쓰세요.\n"
+             "tap node_번호 / scroll down / scroll up / back / done"},
+        ])
+        _verbose("재시도 원문(local)", retry)
+        return parse_action(retry), retry
+
+    def hint(self):
+        return ("llama-server -m eval/models/EXAONE-4.0-1.2B-Q4_K_M.gguf "
+                "-c 4096 --port 8080 을 먼저 실행하세요.")
+
+
+# ─────────────────────────────── Gemini (클라우드) ───────────────────────────────
+
+CLOUD_SYSTEM_PROMPT = """당신은 안드로이드 휴대폰을 대신 조작하는 에이전트입니다.
+접근성 트리로 읽은 현재 화면을 받고, 목표에 한 걸음 다가가는 행동 하나를 고릅니다.
+화면에 보이는 것만 근거로 삼고, 보이지 않는 것을 추측해 지어내지 마세요."""
+
+CLOUD_RULES = """행동은 다음 다섯 가지뿐입니다.
+- tap    : node_id 필수. 화면에 실제로 있는 번호만 씁니다.
+- scroll : direction 필수(up/down/left/right).
+- type   : text 필수. 화면에 [type] 노드가 있을 때만 씁니다.
+- back   : 잘못 들어왔거나 막다른 화면일 때 되돌아갑니다.
+- done   : 목표 화면에 도착했을 때. 마지막 한 번만.
+
+판단 지침:
+- 각 줄의 [tap]/[type]/[scroll]은 그 노드에 할 수 있는 행동입니다.
+- 라벨이 목표와 글자 그대로 같지 않아도, 목표로 가는 길목이면 고르세요.
+  (예: Wi-Fi는 "연결"이나 "네트워크" 안에, 글자 크기는 "디스플레이" 안에 있습니다)
+- 목록이 화면에 다 안 보일 수 있습니다. 찾는 항목이 없으면 scroll down 하세요.
+- 화면 맨 위의 제목/헤더는 대개 누를 대상이 아닙니다. 목록 항목을 고르세요.
+- 최근 행동을 보고 같은 노드를 반복해 누르지 마세요. 화면이 안 바뀌었다면
+  그 경로는 틀린 것이니 다른 항목을 고르거나 scroll/back 하세요.
+- 목표한 화면에 이미 도착했다면 더 누르지 말고 done을 쓰세요.
+
+reason에는 "지금 화면이 무엇이고 왜 이 행동인지"를 한 문장으로 먼저 적으세요."""
+
+# reason을 먼저 쓰게 하는 게 핵심이다. 로컬에서 JSON 스키마를 강제했을 때
+# 판단이 무너졌던 건(agent.py 주석 참고) 모델이 생각하기 전에 action부터
+# 확정했기 때문인데, Gemini는 propertyOrdering으로 생성 순서를 지정할 수 있어
+# 형식을 강제하면서도 "먼저 근거, 그다음 행동" 순서를 지킬 수 있다.
+CLOUD_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "reason": {"type": "STRING"},
+        "action": {"type": "STRING", "enum": list(ACTIONS)},
+        "node_id": {"type": "STRING"},
+        "direction": {"type": "STRING", "enum": list(DIRECTIONS)},
+        "text": {"type": "STRING"},
+    },
+    "required": ["reason", "action"],
+    "propertyOrdering": ["reason", "action", "node_id", "direction", "text"],
+}
+
+
+class GeminiBrain:
+    """Gemini API. 규칙 전문 + JSON 스키마 강제 + 전체 이력.
+
+    주의: 이 브레인은 화면 텍스트를 외부로 보낸다. 개인정보가 있는 화면에서는
+    호출되면 안 된다(2단계에서 라우터와 마스킹을 붙일 자리다). 스크린샷을
+    보내지 않고 접근성 텍스트만 쓰는 것도 그래서다 — 픽셀은 가릴 수가 없다.
+    """
+
+    name = "gemini"
+    online = True
+    max_history = 20              # 큰 모델은 이력이 길수록 같은 실수를 덜 반복한다
+
+    def __init__(self, url=GEMINI_URL, api_key=None, model=GEMINI_MODEL):
+        self.url = url
+        self.model = model
+        self.api_key = api_key if api_key is not None else os.environ.get("GEMINI_API_KEY", "")
+        # 사고 예산은 기본으로 건드리지 않는다. 모델 세대마다 형식이 다르고
+        # (gemini-3.6-flash는 2.5식 thinkingBudget:0을 400으로 거절), 기본값이
+        # 그 모델에 맞게 이미 잡혀 있다. 굳이 조절하고 싶을 때만 환경변수로.
+        #   GEMINI_THINKING='{"thinkingLevel":"low"}'
+        self._thinking_ok = "GEMINI_THINKING" in os.environ
+
+    def _payload(self, user, with_thinking):
+        config = {
+            "temperature": 0,
+            # 3세대는 사고 토큰도 출력 한도에 포함된다. 짧게 잡으면 답을 쓰기도 전에
+            # MAX_TOKENS로 잘려 빈 응답이 온다. 스키마 덕에 실제 출력은 짧으니 넉넉히.
+            "maxOutputTokens": 2048,
+            "responseMimeType": "application/json",
+            "responseSchema": CLOUD_SCHEMA,
+        }
+        if with_thinking:
+            config["thinkingConfig"] = json.loads(os.environ["GEMINI_THINKING"])
+        return {
+            "systemInstruction": {"parts": [{"text": CLOUD_SYSTEM_PROMPT}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": config,
+        }
+
+    def _ask(self, user):
+        headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
+        for attempt in range(3):
+            try:
+                return self._extract(
+                    _post_json(self.url, self._payload(user, self._thinking_ok), headers, timeout=60))
+            except BrainError as error:
+                # 무료 등급은 분당 요청 수 제한이 있다. 에이전트는 스텝마다 부르니
+                # 쉽게 걸리는데, 잠깐 기다리면 풀리므로 루프를 죽이지 않는다.
+                if error.status == 429 and attempt < 2:
+                    wait = 20 * (attempt + 1)
+                    print(f"  (할당량 초과 — {wait}초 기다렸다 재시도합니다)")
+                    time.sleep(wait)
+                    continue
+                # thinkingConfig 형식은 모델 세대마다 다르다(2.5의 thinkingBudget을
+                # 3세대는 거부). 400 본문에 필드명이 안 나오므로, 이걸 보냈다가
+                # 400을 받으면 일단 빼고 다시 시도한다.
+                if error.status == 400 and self._thinking_ok:
+                    print("  (참고: 이 모델이 GEMINI_THINKING 설정을 거부해 빼고 재시도합니다)")
+                    self._thinking_ok = False
+                    continue
+                raise
+        raise BrainError("재시도했으나 계속 실패했습니다.")
+
+    @staticmethod
+    def _extract(data):
+        candidates = data.get("candidates") or []
+        if not candidates:
+            # 안전 필터에 걸리면 candidates 자체가 비어 온다. 이유를 그대로 보여준다.
+            raise BrainError(f"응답에 candidates가 없습니다: {json.dumps(data)[:400]}")
+        parts = candidates[0].get("content", {}).get("parts") or []
+        text = "".join(part.get("text", "") for part in parts)
+        if not text.strip():
+            raise BrainError(
+                f"빈 응답 (finishReason={candidates[0].get('finishReason')}). "
+                f"maxOutputTokens나 GEMINI_THINKING 설정을 확인하세요.")
+        return text
+
+    def decide(self, goal, screen, observation, history):
+        recent = "\n".join(history[-self.max_history:]) or "(아직 없음)"
+        user = (f"{CLOUD_RULES}\n\n목표: {goal}\n\n{screen}\n\n"
+                f"지금까지 한 행동:\n{recent}")
+        _verbose("프롬프트(gemini)", user)
+        raw = self._ask(user)
+        _verbose("모델 원문(gemini)", raw)
+        # 스키마로 형식이 보장되지만, 파싱 실패 시 관대한 해석으로 한 번 더 건진다.
+        try:
+            action = json.loads(raw)
+            if not isinstance(action, dict) or "action" not in action:
+                action = None
+        except json.JSONDecodeError:
+            action = None
+        return (action if action is not None else parse_action(raw)), raw
+
+    def hint(self):
+        return ("GEMINI_API_KEY를 확인하세요(https://aistudio.google.com/apikey). "
+                f"현재 모델: {self.model} — 404라면 GEMINI_MODEL로 바꿔보세요. "
+                "쓸 수 있는 목록: curl -s -H \"x-goog-api-key: $GEMINI_API_KEY\" "
+                "https://generativelanguage.googleapis.com/v1beta/models")
+
+
+SMOKE_SCREEN = """SCREEN (app: com.android.settings)
+node_1 [tap] 설정
+node_2 [tap] 연결
+node_3 [tap] 디스플레이
+node_4 [tap] 배터리"""
+
+
+def smoke_test(name):
+    """폰 없이 모델 연결만 확인한다. 가짜 화면 하나를 주고 답을 받아본다.
+
+    실제 API가 스키마(대문자 타입, propertyOrdering, thinkingConfig)를 받아주는지는
+    여기서만 확인할 수 있다. 기대 답: tap node_2.
+    """
+    brain = make_brain(name)
+    action, raw = brain.decide("와이파이 켜줘", SMOKE_SCREEN,
+                               {"nodes": [{"id": f"node_{i}", "text": "x", "editable": False}
+                                          for i in range(1, 5)]},
+                               [])
+    print(f"[{brain.name}] 원문: {raw.strip()}")
+    print(f"[{brain.name}] 파싱: {action}")
+    print("→ tap node_2가 나왔다면 정상입니다.")
+
+
+def make_brain(name):
+    if name == "local":
+        return LocalBrain()
+    if name == "gemini":
+        brain = GeminiBrain()
+        if not brain.api_key:
+            raise BrainError(f"GEMINI_API_KEY가 비어 있습니다. {brain.hint()}")
+        return brain
+    raise BrainError(f"알 수 없는 브레인: {name} (local | gemini)")
+
+
+if __name__ == "__main__":
+    # 연결 확인용:  python3 eval/brains.py gemini
+    import sys
+    try:
+        smoke_test(sys.argv[1] if len(sys.argv) > 1 else "local")
+    except BrainError as error:
+        sys.exit(f"실패: {error}")
