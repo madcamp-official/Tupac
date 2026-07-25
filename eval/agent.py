@@ -37,27 +37,38 @@ MAX_PROMPT_NODES = 45
 
 # 작은 모델(1.2B)은 system 역할을 약하게 취급해 긴 지시를 무시한다(실측: 화면과
 # 무관한 조언을 늘어놓음). 지시는 짧게 줄여 user 메시지 안에 넣는다.
-SYSTEM_PROMPT = "휴대폰 화면을 조작하는 도우미. JSON 한 줄로만 답한다."
+SYSTEM_PROMPT = "휴대폰 화면을 조작하는 도우미. 한 줄로만 답한다."
 
-INSTRUCTIONS = """휴대폰 화면을 보고, 목표에 가까워지는 다음 행동 하나만 고르세요.
-
-행동 종류: tap / scroll / type / back / done
+RULES = """휴대폰 화면을 보고, 목표에 가까워지는 다음 행동 하나만 고르세요.
 
 규칙:
 - 목표와 관련된 항목이 화면에 있으면 그것을 tap 하세요.
 - 라벨이 목표와 똑같지 않아도 목표로 가는 길목이면 고르세요.
   (글자 크기 → "디스플레이", Wi-Fi → "연결" 안에 있음)
-- 화면에 목표와 관련된 게 전혀 없을 때만 scroll 하세요.
+- 목록이 화면에 다 안 보일 수 있습니다. 찾는 항목이 없으면 scroll down 하세요.
 - 화면 맨 위의 제목은 누르지 마세요. 목록 항목을 고르세요.
-- done은 목표 화면에 확실히 도착했을 때만 쓰세요.
+- 최근 행동에서 이미 누른 node를 다시 누르지 마세요.
+- 목표한 화면에 도착했으면 더 누르지 말고 done을 쓰세요.
+  (예: 목표가 "글자 크게"인데 화면에 글자 크기 조절이 보이면 done)"""
 
-답은 아래 다섯 가지 중 하나를 그대로, 한 줄만 쓰세요. 설명하지 마세요.
 
-tap node_41
-scroll down
-type 와이파이
-back
-done"""
+def build_instructions(observation):
+    """현재 화면에서 실제로 가능한 선택지만 제시한다.
+
+    고정된 예시 목록을 주면 작은 모델이 예시를 그대로 베낀다(실측: 입력창이
+    없는 화면에서 예시의 "type 와이파이"를 여섯 스텝 내내 반복). 화면에
+    입력창이 있을 때만 type을 노출하고, 예시 node 번호도 실제 화면 것을 쓴다.
+    """
+    example = next(
+        (n["id"] for n in observation["nodes"]
+         if (n.get("text") or n.get("content_description"))),
+        "node_1",
+    )
+    options = [f"tap {example}", "scroll down", "scroll up", "back", "done"]
+    if any(n["editable"] for n in observation["nodes"]):
+        options.insert(1, "type 넣을글자")
+    return (f"{RULES}\n\n답은 아래 형태 중 하나로 한 줄만 쓰세요. 설명하지 마세요.\n"
+            f"tap 뒤에는 화면에 있는 node 번호를 쓰세요.\n\n" + "\n".join(options))
 
 ACTION_SCHEMA = {
     "type": "object",
@@ -238,16 +249,17 @@ def run(goal, max_steps, all_nodes, dry):
 
         screen = render_screen(observation, all_nodes)
         recent = "\n".join(history[-MAX_HISTORY:]) or "(아직 없음)"
-        # 마지막 줄을 "JSON:"으로 끝내면 모델이 곧바로 JSON부터 쓰기 시작한다.
-        user = (f"{INSTRUCTIONS}\n\n목표: {goal}\n\n{screen}\n\n"
-                f"최근 행동:\n{recent}\n\nJSON:")
+        # 마지막 줄을 "답:"으로 끝내면 모델이 곧바로 행동부터 쓰기 시작한다.
+        user = (f"{build_instructions(observation)}\n\n목표: {goal}\n\n{screen}\n\n"
+                f"최근 행동:\n{recent}\n\n답:")
 
         if os.environ.get("AGENT_VERBOSE"):
             print(f"----- 프롬프트(step {step}) -----\n{user}\n{'-' * 30}")
 
+        messages = [{"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user}]
         started = time.time()
-        raw = ask_model([{"role": "system", "content": SYSTEM_PROMPT},
-                         {"role": "user", "content": user}])
+        raw = ask_model(messages)
         elapsed = time.time() - started
 
         if os.environ.get("AGENT_VERBOSE"):
@@ -255,8 +267,22 @@ def run(goal, max_steps, all_nodes, dry):
 
         action = parse_action(raw)
         if action is None:
-            print(f"[{step}] 모델 응답을 JSON으로 못 읽음: {raw[:200]}")
-            return
+            # 형식이 무너진 응답 하나로 루프 전체를 끝내지 않는다. 형식만 다시
+            # 일러주고 한 번 더 물어본다(예: 인자 없는 "type"만 답한 경우).
+            retry = ask_model(messages + [
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content":
+                 "형식이 틀렸습니다. 아래 중 하나를 그대로 한 줄만 쓰세요.\n"
+                 "tap node_번호 / scroll down / scroll up / back / done"},
+            ])
+            if os.environ.get("AGENT_VERBOSE"):
+                print(f"재시도 원문: {retry}")
+            action = parse_action(retry)
+
+        if action is None:
+            print(f"[{step}] 응답을 해석하지 못해 이 스텝을 건너뜁니다: {raw[:120]}")
+            history.append(f"step{step}: 형식 오류 → 건너뜀")
+            continue
 
         detail = action.get("node_id") or action.get("direction") or action.get("text") or ""
         print(f"[{step}] {action['action']} {detail}"
@@ -273,7 +299,15 @@ def run(goal, max_steps, all_nodes, dry):
         history.append(f"step{step}: {action['action']} {detail} → {outcome}")
         time.sleep(1.2)          # 화면 전환이 끝날 때까지 잠깐 기다린다
 
-    print(f"{'=' * 60}\n{max_steps}스텝을 다 썼습니다. 목표 미달성.")
+    # done을 못 뽑았다고 실패는 아니다. 목표를 이미 이뤘는데도 완료 선언만
+    # 못 하는 경우가 잦아, 마지막 화면을 보여주고 사람이 판단하게 한다.
+    final = mcp("device_observe", {"max_nodes": 500})
+    labels = [(n.get("text") or n.get("content_description") or "").strip()
+              for n in final.get("nodes", [])]
+    preview = " / ".join(l for l in labels if l)[:150]
+    print(f"{'=' * 60}\n{max_steps}스텝을 모두 사용했습니다 (모델이 done을 선언하지 않음).")
+    print(f"마지막 화면: [{final.get('package_name', '?')}] {preview}")
+    print("→ 목표가 달성됐는지 폰 화면으로 확인하세요.")
 
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
