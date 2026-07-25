@@ -15,83 +15,73 @@ import org.json.JSONObject
 class McpDeviceToolAdapter(
     private val registry: DeviceToolRegistry,
 ) {
-    fun screenshotDefinition(): JSONObject =
-        registry.definitions
-            .first { definition -> definition.name == CaptureScreenDeviceTool.NAME }
-            .toMcpDefinition(EXTERNAL_SCREENSHOT_NAME)
+    // MCP에 노출되는 external 이름 <-> 내부 DeviceTool 이름.
+    // 새 tool 추가 = 여기 한 줄 + DeviceToolRegistry 등록. (HTTP 서버는 안 건드림)
+    private val externalToInternal = mapOf(
+        EXTERNAL_SCREENSHOT_NAME to CaptureScreenDeviceTool.NAME,
+        EXTERNAL_BACK_NAME to BackDeviceTool.NAME,
+        EXTERNAL_SCROLL_NAME to ScrollDeviceTool.NAME,
+        EXTERNAL_TYPE_TEXT_NAME to TypeTextDeviceTool.NAME,
+    )
 
-    fun backDefinition(): JSONObject =
-        registry.definitions
-            .first { definition -> definition.name == BackDeviceTool.NAME }
-            .toMcpDefinition(EXTERNAL_BACK_NAME)
+    /** tools/list에 실을 이 어댑터가 담당하는 모든 tool의 MCP 정의. */
+    fun definitions(): List<JSONObject> =
+        externalToInternal.map { (externalName, internalName) ->
+            registry.definitions
+                .first { definition -> definition.name == internalName }
+                .toMcpDefinition(externalName)
+        }
 
-    fun scrollDefinition(): JSONObject =
-        registry.definitions
-            .first { definition -> definition.name == ScrollDeviceTool.NAME }
-            .toMcpDefinition(EXTERNAL_SCROLL_NAME)
-
-    fun typeTextDefinition(): JSONObject =
-        registry.definitions
-            .first { definition -> definition.name == TypeTextDeviceTool.NAME }
-            .toMcpDefinition(EXTERNAL_TYPE_TEXT_NAME)
+    /** 이 어댑터가 처리할 수 있는 tool 이름인지. */
+    fun handles(externalName: String): Boolean =
+        externalToInternal.containsKey(externalName)
 
     fun call(externalName: String, arguments: JSONObject): JSONObject {
-        val deviceToolName = when (externalName) {
-            EXTERNAL_SCREENSHOT_NAME -> CaptureScreenDeviceTool.NAME
-            EXTERNAL_BACK_NAME -> BackDeviceTool.NAME
-            EXTERNAL_SCROLL_NAME -> ScrollDeviceTool.NAME
-            EXTERNAL_TYPE_TEXT_NAME -> TypeTextDeviceTool.NAME
-            else -> return error(
+        val deviceToolName = externalToInternal[externalName]
+            ?: return error(
                 code = "UNKNOWN_TOOL",
                 message = "등록되지 않은 MCP Device Tool입니다: $externalName",
             )
-        }
         return when (
             val result = registry.execute(
-                DeviceToolCall(
-                    name = deviceToolName,
-                    arguments = arguments,
-                ),
+                DeviceToolCall(name = deviceToolName, arguments = arguments),
             )
         ) {
-            is DeviceToolResult.Screenshot -> JSONObject()
-                .put(
-                    "content",
-                    JSONArray()
-                        .put(
-                            JSONObject()
-                                .put("type", "text")
-                                .put(
-                                    "text",
-                                    JSONObject()
-                                        .put("success", true)
-                                        .put("format", "image/jpeg")
-                                        .put("width", result.width)
-                                        .put("height", result.height)
-                                        .put("bytes", result.jpegBytes.size)
-                                        .toString(),
-                                ),
-                        )
-                        .put(
-                            JSONObject()
-                                .put("type", "image")
-                                .put(
-                                    "data",
-                                    Base64.encodeToString(
-                                        result.jpegBytes,
-                                        Base64.NO_WRAP,
-                                    ),
-                                )
-                                .put("mimeType", "image/jpeg"),
-                        ),
-                )
-                .put("isError", false)
-
+            is DeviceToolResult.Screenshot -> screenshotResult(result)
             is DeviceToolResult.Success -> success(result.message)
-
             is DeviceToolResult.Error -> error(result.code, result.message)
         }
     }
+
+    private fun screenshotResult(result: DeviceToolResult.Screenshot): JSONObject = JSONObject()
+        .put(
+            "content",
+            JSONArray()
+                .put(
+                    JSONObject()
+                        .put("type", "text")
+                        .put(
+                            "text",
+                            JSONObject()
+                                .put("success", true)
+                                .put("format", "image/jpeg")
+                                .put("width", result.width)
+                                .put("height", result.height)
+                                .put("bytes", result.jpegBytes.size)
+                                .toString(),
+                        ),
+                )
+                .put(
+                    JSONObject()
+                        .put("type", "image")
+                        .put(
+                            "data",
+                            Base64.encodeToString(result.jpegBytes, Base64.NO_WRAP),
+                        )
+                        .put("mimeType", "image/jpeg"),
+                ),
+        )
+        .put("isError", false)
 
     private fun success(message: String?): JSONObject = JSONObject()
         .put(

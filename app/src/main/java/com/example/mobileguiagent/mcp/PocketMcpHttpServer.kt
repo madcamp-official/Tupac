@@ -248,9 +248,6 @@ class PocketMcpHttpServer(
                             ),
                         ),
                     ),
-            )
-            .put(
-                mcpDeviceToolAdapter.screenshotDefinition(),
             ),
     ).also { result ->
         result.getJSONArray("tools").put(
@@ -296,11 +293,9 @@ class PocketMcpHttpServer(
                 ),
         )
     }.also { result ->
-        result.getJSONArray("tools").put(mcpDeviceToolAdapter.backDefinition())
-    }.also { result ->
-        result.getJSONArray("tools").put(mcpDeviceToolAdapter.scrollDefinition())
-    }.also { result ->
-        result.getJSONArray("tools").put(mcpDeviceToolAdapter.typeTextDefinition())
+        // 어댑터가 담당하는 device tool(screenshot/back/scroll/type_text…)을 한 번에 노출.
+        val tools = result.getJSONArray("tools")
+        mcpDeviceToolAdapter.definitions().forEach { definition -> tools.put(definition) }
     }
 
     private fun objectSchema(properties: JSONObject): JSONObject = JSONObject()
@@ -331,20 +326,19 @@ class PocketMcpHttpServer(
                     toolResult(snapshotJson(snapshot, maxNodes))
                 }
             }
-            McpDeviceToolAdapter.EXTERNAL_SCREENSHOT_NAME,
-            McpDeviceToolAdapter.EXTERNAL_BACK_NAME,
-            McpDeviceToolAdapter.EXTERNAL_SCROLL_NAME,
-            McpDeviceToolAdapter.EXTERNAL_TYPE_TEXT_NAME ->
-                mcpDeviceToolAdapter.call(name, arguments)
             "device_open_settings" -> openSettings()
             "device_click_node" -> clickNode(arguments)
-            else -> toolResult(
-                JSONObject()
-                    .put("success", false)
-                    .put("error", "UNKNOWN_TOOL")
-                    .put("tool", name),
-                isError = true,
-            )
+            else -> if (mcpDeviceToolAdapter.handles(name)) {
+                mcpDeviceToolAdapter.call(name, arguments)
+            } else {
+                toolResult(
+                    JSONObject()
+                        .put("success", false)
+                        .put("error", "UNKNOWN_TOOL")
+                        .put("tool", name),
+                    isError = true,
+                )
+            }
         }
     }
 
