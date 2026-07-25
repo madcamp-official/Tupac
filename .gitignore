@@ -14,3 +14,7 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# 온디바이스 모델 가중치 (수백 MB~GB, 저장소에 넣지 않음)
+*.gguf
+/eval/models/

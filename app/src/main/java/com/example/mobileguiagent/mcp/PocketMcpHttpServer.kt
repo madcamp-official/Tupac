@@ -248,9 +248,6 @@ class PocketMcpHttpServer(
                             ),
                         ),
                     ),
-            )
-            .put(
-                mcpDeviceToolAdapter.screenshotDefinition(),
             ),
     ).also { result ->
         result.getJSONArray("tools").put(
@@ -295,6 +292,10 @@ class PocketMcpHttpServer(
                     ),
                 ),
         )
+    }.also { result ->
+        // 어댑터가 담당하는 device tool(screenshot/back/scroll/type_text…)을 한 번에 노출.
+        val tools = result.getJSONArray("tools")
+        mcpDeviceToolAdapter.definitions().forEach { definition -> tools.put(definition) }
     }
 
     private fun objectSchema(properties: JSONObject): JSONObject = JSONObject()
@@ -325,17 +326,19 @@ class PocketMcpHttpServer(
                     toolResult(snapshotJson(snapshot, maxNodes))
                 }
             }
-            McpDeviceToolAdapter.EXTERNAL_SCREENSHOT_NAME ->
-                mcpDeviceToolAdapter.call(name, arguments)
             "device_open_settings" -> openSettings()
             "device_click_node" -> clickNode(arguments)
-            else -> toolResult(
-                JSONObject()
-                    .put("success", false)
-                    .put("error", "UNKNOWN_TOOL")
-                    .put("tool", name),
-                isError = true,
-            )
+            else -> if (mcpDeviceToolAdapter.handles(name)) {
+                mcpDeviceToolAdapter.call(name, arguments)
+            } else {
+                toolResult(
+                    JSONObject()
+                        .put("success", false)
+                        .put("error", "UNKNOWN_TOOL")
+                        .put("tool", name),
+                    isError = true,
+                )
+            }
         }
     }
 
@@ -395,13 +398,30 @@ class PocketMcpHttpServer(
 
         val action = clickSnapshotNodeOnMainThread(target, observed.packageName)
             ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
+
+        // 이중 전략(구현가이드 3장 노드 주소 지정): 라벨 기반 클릭(ACTION_CLICK)이
+        // 실패하면 — 라벨 없는 노드 등 — snapshot에 있는 bounds 중앙을 좌표 탭한다.
+        // 화면이 안 바뀐 건 위에서 이미 검증했으므로 이 좌표를 신뢰할 수 있다.
+        var success = action.success
+        var method = "node_click"
+        if (!success) {
+            val tapped = tapOnMainThread(
+                target.bounds.exactCenterX(),
+                target.bounds.exactCenterY(),
+            )
+            if (tapped) {
+                success = true
+                method = "coordinate_tap"
+            }
+        }
+
         val after = waitForScreenChange(current)
         if (after != null) lastSnapshot.set(after)
         val changed = after?.fingerprint?.hash != current.fingerprint.hash
 
         return toolResult(
             JSONObject()
-                .put("success", action.success)
+                .put("success", success)
                 .put("node_id", nodeId)
                 .put(
                     "label",
@@ -409,6 +429,7 @@ class PocketMcpHttpServer(
                 )
                 .put("matched_text", action.matchedText ?: JSONObject.NULL)
                 .put("used_clickable_ancestor", action.usedClickableAncestor)
+                .put("method", method)
                 .put("screen_changed", changed)
                 .put("before_package", current.packageName)
                 .put("after_package", after?.packageName ?: current.packageName)
@@ -416,8 +437,22 @@ class PocketMcpHttpServer(
                     "after_snapshot_id",
                     after?.fingerprint?.hash ?: current.fingerprint.hash,
                 ),
-            isError = !action.success,
+            isError = !success,
         )
+    }
+
+    private fun tapOnMainThread(x: Float, y: Float): Boolean {
+        val service = AgentAccessibilityService.activeService ?: return false
+        val result = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            service.tap(x, y) { completed ->
+                result.set(completed)
+                latch.countDown()
+            }
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        return result.get()
     }
 
     private fun toolError(code: String, message: String): JSONObject = toolResult(
@@ -478,9 +513,36 @@ class PocketMcpHttpServer(
             .put("timestamp_ms", System.currentTimeMillis())
     }
 
+    /**
+     * LLM에 보낼 노드만 남기는 필터.
+     *
+     * 아래 중 하나라도 참이면 "의미 있는 노드"로 보고 유지한다:
+     *  - 직접 동작 가능: clickable / editable / scrollable
+     *  - 정보가 있음: text(보이는 글자) 또는 content_description(아이콘 등 접근성 라벨)
+     *
+     * 걸러지는 건 라벨도 동작도 없는 순수 레이아웃 컨테이너·장식 뷰뿐이다.
+     * 놓침(recall) 방지를 우선해 라벨 없는 clickable도 남긴다.
+     *
+     * 추가로 visibleToUser=false(가려졌거나 화면 밖, 예: 열린 폴더 뒤 workspace,
+     * 스크롤 밖 리스트 항목, 옆 홈페이지 peek)는 제외한다. 화면에 실제로 없는 걸
+     * LLM에 보여주면 착각하므로.
+     */
+    private fun isMeaningfulNode(node: UiNode): Boolean =
+        node.visibleToUser &&
+            (
+                node.clickable ||
+                    node.editable ||
+                    node.scrollable ||
+                    !node.text.isNullOrBlank() ||
+                    !node.contentDescription.isNullOrBlank()
+                )
+
     private fun snapshotJson(snapshot: UiSnapshot, maxNodes: Int): JSONObject {
+        // 필터는 반환용 목록에만 적용. 저장 원본(lastSnapshot)과 snapshot_id(fingerprint)는
+        // 그대로라 click_node 정합성 검사는 영향받지 않는다. node.id도 원래 값을 유지한다.
+        val meaningful = snapshot.nodes.filter(::isMeaningfulNode)
         val nodes = JSONArray()
-        snapshot.nodes.take(maxNodes).forEach { node ->
+        meaningful.take(maxNodes).forEach { node ->
             nodes.put(
                 JSONObject()
                     .put("id", node.id)
@@ -510,8 +572,9 @@ class PocketMcpHttpServer(
             .put("captured_at_ms", snapshot.capturedAtMillis)
             .put("package_name", snapshot.packageName)
             .put("node_count", snapshot.nodes.size)
+            .put("meaningful_node_count", meaningful.size)
             .put("returned_node_count", nodes.length())
-            .put("truncated", snapshot.nodes.size > nodes.length())
+            .put("truncated", meaningful.size > nodes.length())
             .put("nodes", nodes)
     }
 

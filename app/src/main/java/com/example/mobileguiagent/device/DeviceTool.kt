@@ -20,6 +20,11 @@ sealed interface DeviceToolResult {
         val height: Int,
     ) : DeviceToolResult
 
+    /** 이미지가 아니라 "동작이 성공했다"만 돌려주는 tool(back, swipe, type_text 등)용 결과. */
+    data class Success(
+        val message: String? = null,
+    ) : DeviceToolResult
+
     data class Error(
         val code: String,
         val message: String,
@@ -33,7 +38,12 @@ interface DeviceTool {
 }
 
 class DeviceToolRegistry(
-    tools: List<DeviceTool> = listOf(CaptureScreenDeviceTool),
+    tools: List<DeviceTool> = listOf(
+        CaptureScreenDeviceTool,
+        BackDeviceTool,
+        ScrollDeviceTool,
+        TypeTextDeviceTool,
+    ),
 ) {
     private val toolsByName = tools.associateBy { tool -> tool.definition.name }
 
