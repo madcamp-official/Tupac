@@ -54,9 +54,14 @@ def mcp(name, arguments):
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     try:
         outer = json.load(urllib.request.urlopen(req, timeout=30))
-    except urllib.error.URLError as error:
+    except OSError as error:
+        # URLError만 잡으면 안 된다. adb forward는 살아 있는데 폰 쪽이 끊긴 경우
+        # (기기 offline, 앱 종료) RemoteDisconnected가 나는데 이건 URLError가
+        # 아니라 ConnectionResetError라 그대로 traceback이 쏟아진다. 둘 다 OSError다.
         sys.exit(f"폰 서버 연결 실패({MCP_URL}): {error}\n"
-                 f"  adb forward --list 확인 → 없으면 adb forward tcp:{MCP_PORT} tcp:8765")
+                 f"  1) adb devices → device 상태인가? (offline이면 adb kill-server 후 재연결)\n"
+                 f"  2) adb forward --list → 없으면 adb forward tcp:{MCP_PORT} tcp:8765\n"
+                 f"  3) 폰에서 앱이 켜져 있고 MCP 서버가 시작됐는가?")
     return json.loads(outer["result"]["content"][0]["text"])
 
 
@@ -135,7 +140,7 @@ def run(goal, brain, max_steps, all_nodes, dry):
         try:
             action, raw = brain.decide(goal, screen, observation, history)
         except brains.BrainError as error:
-            sys.exit(f"모델 호출 실패: {error}\n  {brain.hint()}")
+            sys.exit(f"모델 호출 실패: {error}\n  {brain.hint(error.status)}")
         elapsed = time.time() - started
 
         if action is None:

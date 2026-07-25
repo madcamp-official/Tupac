@@ -15,7 +15,7 @@
 환경변수:
     LLM_URL         로컬 모델 서버 (기본 http://127.0.0.1:8080/v1/chat/completions)
     GEMINI_API_KEY  Gemini API 키 (--brain gemini 일 때 필수)
-    GEMINI_MODEL    모델 이름 (기본 gemini-2.5-flash)
+    GEMINI_MODEL    모델 이름 (기본 gemini-3.6-flash)
     GEMINI_URL      엔드포인트 직접 지정 (테스트용 스텁을 붙일 때)
     GEMINI_THINKING 사고 설정 JSON. 기본은 안 보냄(모델 기본값을 따름).
                     예: GEMINI_THINKING='{"thinkingLevel":"low"}'
@@ -47,6 +47,19 @@ class BrainError(Exception):
     def __init__(self, message, status=None):
         super().__init__(message)
         self.status = status         # HTTP 상태 코드 (429 재시도 판단에 쓴다)
+
+
+def retry_delay(message, fallback):
+    """429 응답이 알려주는 대기 시간을 그대로 쓴다.
+
+    Gemini는 본문에 "Please retry in 13.79s"와 retryDelay 필드를 준다. 고정
+    간격으로 기다리면 너무 짧아 또 맞거나(재시도 낭비) 너무 길어 시간을 버린다.
+    """
+    for pattern in (r"retry in ([0-9.]+)s", r'"retryDelay"\s*:\s*"([0-9.]+)s"'):
+        found = re.search(pattern, message)
+        if found:
+            return min(float(found.group(1)) + 1, 65)   # 1초 여유, 상한 65초
+    return fallback
 
 
 def _verbose(title, body):
@@ -212,7 +225,7 @@ class LocalBrain:
         _verbose("재시도 원문(local)", retry)
         return parse_action(retry), retry
 
-    def hint(self):
+    def hint(self, status=None):
         return ("llama-server -m eval/models/EXAONE-4.0-1.2B-Q4_K_M.gguf "
                 "-c 4096 --port 8080 을 먼저 실행하세요.")
 
@@ -301,16 +314,17 @@ class GeminiBrain:
 
     def _ask(self, user):
         headers = {"Content-Type": "application/json", "x-goog-api-key": self.api_key}
-        for attempt in range(3):
+        attempts = 5
+        for attempt in range(attempts):
             try:
                 return self._extract(
                     _post_json(self.url, self._payload(user, self._thinking_ok), headers, timeout=60))
             except BrainError as error:
                 # 무료 등급은 분당 요청 수 제한이 있다. 에이전트는 스텝마다 부르니
                 # 쉽게 걸리는데, 잠깐 기다리면 풀리므로 루프를 죽이지 않는다.
-                if error.status == 429 and attempt < 2:
-                    wait = 20 * (attempt + 1)
-                    print(f"  (할당량 초과 — {wait}초 기다렸다 재시도합니다)")
+                if error.status == 429 and attempt < attempts - 1:
+                    wait = retry_delay(str(error), 20 * (attempt + 1))
+                    print(f"  (할당량 초과 — {wait:.0f}초 기다렸다 재시도합니다)")
                     time.sleep(wait)
                     continue
                 # thinkingConfig 형식은 모델 세대마다 다르다(2.5의 thinkingBudget을
@@ -353,11 +367,16 @@ class GeminiBrain:
             action = None
         return (action if action is not None else parse_action(raw)), raw
 
-    def hint(self):
-        return ("GEMINI_API_KEY를 확인하세요(https://aistudio.google.com/apikey). "
-                f"현재 모델: {self.model} — 404라면 GEMINI_MODEL로 바꿔보세요. "
-                "쓸 수 있는 목록: curl -s -H \"x-goog-api-key: $GEMINI_API_KEY\" "
-                "https://generativelanguage.googleapis.com/v1beta/models")
+    def hint(self, status=None):
+        if status == 429:
+            return ("무료 등급 요청 한도를 넘었습니다. 잠시 뒤 다시 돌리거나, "
+                    "--steps를 줄이거나, GEMINI_MODEL로 한도가 다른 모델을 쓰세요.")
+        if status == 404:
+            return (f"모델 {self.model}을(를) 쓸 수 없습니다. GEMINI_MODEL로 바꾸세요. "
+                    "목록: curl -s -H \"x-goog-api-key: $GEMINI_API_KEY\" "
+                    "https://generativelanguage.googleapis.com/v1beta/models")
+        return (f"GEMINI_API_KEY를 확인하세요(https://aistudio.google.com/apikey). "
+                f"현재 모델: {self.model}")
 
 
 SMOKE_SCREEN = """SCREEN (app: com.android.settings)
