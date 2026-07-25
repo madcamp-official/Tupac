@@ -1,0 +1,135 @@
+{
+  "cases": [
+    {
+      "dump": "home_launcher",
+      "package_name": "com.sec.android.app.launcher",
+      "task": "날씨 확인하기",
+      "answer_node_ids": [
+        "node_13"
+      ],
+      "answer_labels": [
+        "현재 위치, 구성동, 현재 온도 32도, 대체로 흐림, 초미세먼지, 좋음 (11), 마지막 업데이트 오후 12:53"
+      ]
+    },
+    {
+      "dump": "home_launcher",
+      "package_name": "com.sec.android.app.launcher",
+      "task": "문자 보내기",
+      "answer_node_ids": [
+        "node_76"
+      ],
+      "answer_labels": [
+        "메시지"
+      ]
+    },
+    {
+      "dump": "home_launcher",
+      "package_name": "com.sec.android.app.launcher",
+      "task": "사진 찍기",
+      "answer_node_ids": [
+        "node_77"
+      ],
+      "answer_labels": [
+        "카메라"
+      ]
+    },
+    {
+      "dump": "home_launcher",
+      "package_name": "com.sec.android.app.launcher",
+      "task": "앱 설치하러 가기",
+      "answer_node_ids": [
+        "node_51"
+      ],
+      "answer_labels": [
+        "Play 스토어"
+      ]
+    },
+    {
+      "dump": "home_launcher",
+      "package_name": "com.sec.android.app.launcher",
+      "task": "전화 걸기",
+      "answer_node_ids": [
+        "node_75"
+      ],
+      "answer_labels": [
+        "전화"
+      ]
+    },
+    {
+      "dump": "settings_home",
+      "package_name": "com.android.settings",
+      "task": "글자 크게 하기",
+      "answer_node_ids": [
+        "node_61",
+        "node_62"
+      ],
+      "answer_labels": [
+        "디스플레이",
+        "밝기  •  편안하게 화면 보기  •  내비게이션 바"
+      ]
+    },
+    {
+      "dump": "settings_home",
+      "package_name": "com.android.settings",
+      "task": "배경화면 바꾸기",
+      "answer_node_ids": [
+        "node_67",
+        "node_68"
+      ],
+      "answer_labels": [
+        "배경화면 및 스타일",
+        "배경화면  •  컬러 팔레트"
+      ]
+    },
+    {
+      "dump": "settings_home",
+      "package_name": "com.android.settings",
+      "task": "설정에서 검색하기",
+      "answer_node_ids": [
+        "node_15"
+      ],
+      "answer_labels": [
+        "설정 검색"
+      ]
+    },
+    {
+      "dump": "settings_home",
+      "package_name": "com.android.settings",
+      "task": "소리 크게 하기",
+      "answer_node_ids": [
+        "node_48",
+        "node_49"
+      ],
+      "answer_labels": [
+        "소리 및 진동",
+        "소리 모드  •  벨소리"
+      ]
+    },
+    {
+      "dump": "settings_home",
+      "package_name": "com.android.settings",
+      "task": "알림 설정 바꾸기",
+      "answer_node_ids": [
+        "node_54",
+        "node_55"
+      ],
+      "answer_labels": [
+        "알림",
+        "상태표시줄  •  방해 금지"
+      ]
+    },
+    {
+      "dump": "settings_home",
+      "package_name": "com.android.settings",
+      "task": "와이파이 켜기",
+      "answer_node_ids": [
+        "node_41",
+        "node_42"
+      ],
+      "answer_labels": [
+        "연결",
+        "Wi-Fi  •  블루투스  •  비행기 탑승 모드"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,552 @@
+{
+  "name": "home_launcher",
+  "package_name": "com.sec.android.app.launcher",
+  "node_count": 79,
+  "meaningful_node_count": 28,
+  "prompt_chars": 2011,
+  "prompt_tokens_approx": 800,
+  "observation": {
+    "success": true,
+    "snapshot_id": "089cf80ba62a9730c7d61372cb94f9f0b8e67cc85956339a8acffc92757f2008",
+    "captured_at_ms": 1784955755969,
+    "package_name": "com.sec.android.app.launcher",
+    "node_count": 79,
+    "meaningful_node_count": 28,
+    "returned_node_count": 28,
+    "truncated": false,
+    "nodes": [
+      {
+        "id": "node_9",
+        "text": null,
+        "content_description": null,
+        "class_name": "com.android.launcher3.PagedView",
+        "view_id": "com.sec.android.app.launcher:id/workspace",
+        "clickable": false,
+        "editable": false,
+        "scrollable": true,
+        "enabled": true,
+        "checked": null,
+        "depth": 5,
+        "bounds": {
+          "left": 0,
+          "top": 0,
+          "right": 1080,
+          "bottom": 2280
+        }
+      },
+      {
+        "id": "node_10",
+        "text": null,
+        "content_description": null,
+        "class_name": "android.view.ViewGroup",
+        "view_id": null,
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 6,
+        "bounds": {
+          "left": 26,
+          "top": 146,
+          "right": 1054,
+          "bottom": 1917
+        }
+      },
+      {
+        "id": "node_12",
+        "text": null,
+        "content_description": "날씨. 이동하려면 두 번 누른 후 움직이세요.",
+        "class_name": "android.appwidget.AppWidgetHostView",
+        "view_id": null,
+        "clickable": false,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 8,
+        "bounds": {
+          "left": 39,
+          "top": 858,
+          "right": 1041,
+          "bottom": 1202
+        }
+      },
+      {
+        "id": "node_13",
+        "text": null,
+        "content_description": "현재 위치, 구성동, 현재 온도 32도, 대체로 흐림, 초미세먼지, 좋음 (11), 마지막 업데이트 오후 12:53",
+        "class_name": "android.widget.FrameLayout",
+        "view_id": "com.sec.android.daemonapp:id/widget_main_layout",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 9,
+        "bounds": {
+          "left": 51,
+          "top": 870,
+          "right": 1029,
+          "bottom": 1190
+        }
+      },
+      {
+        "id": "node_20",
+        "text": "32°",
+        "content_description": null,
+        "class_name": "android.widget.TextView",
+        "view_id": "com.sec.android.daemonapp:id/widget_current_temp",
+        "clickable": false,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 12,
+        "bounds": {
+          "left": 282,
+          "top": 950,
+          "right": 461,
+          "bottom": 1110
+        }
+      },
+      {
+        "id": "node_23",
+        "text": "구성동",
+        "content_description": null,
+        "class_name": "android.widget.TextView",
+        "view_id": "com.sec.android.daemonapp:id/widget_current_city_name",
+        "clickable": false,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 13,
+        "bounds": {
+          "left": 485,
+          "top": 946,
+          "right": 957,
+          "bottom": 1003
+        }
+      },
+      {
+        "id": "node_25",
+        "text": "초미세먼지 : 좋음 (11)",
+        "content_description": null,
+        "class_name": "android.widget.TextView",
+        "view_id": "com.sec.android.daemonapp:id/widget_additional_info_text",
+        "clickable": false,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 13,
+        "bounds": {
+          "left": 485,
+          "top": 1009,
+          "right": 957,
+          "bottom": 1058
+        }
+      },
+      {
+        "id": "node_27",
+        "text": "오후 12:53",
+        "content_description": null,
+        "class_name": "android.widget.TextView",
+        "view_id": "com.sec.android.daemonapp:id/widget_update_text",
+        "clickable": false,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 13,
+        "bounds": {
+          "left": 746,
+          "top": 1064,
+          "right": 909,
+          "bottom": 1113
+        }
+      },
+      {
+        "id": "node_29",
+        "text": null,
+        "content_description": "날씨 업데이트",
+        "class_name": "android.widget.Button",
+        "view_id": "com.sec.android.daemonapp:id/widget_refresh_icon_touch_area",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 11,
+        "bounds": {
+          "left": 858,
+          "top": 1020,
+          "right": 993,
+          "bottom": 1155
+        }
+      },
+      {
+        "id": "node_31",
+        "text": null,
+        "content_description": "Google 검색. 이동하려면 두 번 누른 후 움직이세요.",
+        "class_name": "android.appwidget.AppWidgetHostView",
+        "view_id": null,
+        "clickable": false,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 8,
+        "bounds": {
+          "left": 39,
+          "top": 1208,
+          "right": 1041,
+          "bottom": 1552
+        }
+      },
+      {
+        "id": "node_34",
+        "text": null,
+        "content_description": null,
+        "class_name": "android.widget.FrameLayout",
+        "view_id": "com.google.android.googlequicksearchbox:id/googleapp_search_widget_ghost_google_logo",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 11,
+        "bounds": {
+          "left": 51,
+          "top": 1296,
+          "right": 195,
+          "bottom": 1464
+        }
+      },
+      {
+        "id": "node_35",
+        "text": null,
+        "content_description": null,
+        "class_name": "android.widget.FrameLayout",
+        "view_id": "com.google.android.googlequicksearchbox:id/googleapp_search_widget_ghost_text_search",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 11,
+        "bounds": {
+          "left": 195,
+          "top": 1296,
+          "right": 741,
+          "bottom": 1464
+        }
+      },
+      {
+        "id": "node_36",
+        "text": null,
+        "content_description": null,
+        "class_name": "android.widget.FrameLayout",
+        "view_id": "com.google.android.googlequicksearchbox:id/googleapp_search_widget_ghost_voice_search",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 11,
+        "bounds": {
+          "left": 741,
+          "top": 1296,
+          "right": 885,
+          "bottom": 1464
+        }
+      },
+      {
+        "id": "node_37",
+        "text": null,
+        "content_description": null,
+        "class_name": "android.widget.FrameLayout",
+        "view_id": "com.google.android.googlequicksearchbox:id/googleapp_search_widget_ghost_lens",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 11,
+        "bounds": {
+          "left": 885,
+          "top": 1296,
+          "right": 1029,
+          "bottom": 1464
+        }
+      },
+      {
+        "id": "node_40",
+        "text": null,
+        "content_description": "Google 검색",
+        "class_name": "android.widget.ImageView",
+        "view_id": "com.google.android.googlequicksearchbox:id/googleapp_search_widget_background",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 11,
+        "bounds": {
+          "left": 51,
+          "top": 1308,
+          "right": 1029,
+          "bottom": 1452
+        }
+      },
+      {
+        "id": "node_43",
+        "text": null,
+        "content_description": "Google 앱",
+        "class_name": "android.widget.ImageButton",
+        "view_id": "com.google.android.googlequicksearchbox:id/googleapp_search_widget_google_logo",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 13,
+        "bounds": {
+          "left": 51,
+          "top": 1308,
+          "right": 195,
+          "bottom": 1452
+        }
+      },
+      {
+        "id": "node_46",
+        "text": null,
+        "content_description": "음성 검색",
+        "class_name": "android.widget.ImageButton",
+        "view_id": "com.google.android.googlequicksearchbox:id/googleapp_search_widget_voice_btn",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 13,
+        "bounds": {
+          "left": 741,
+          "top": 1308,
+          "right": 885,
+          "bottom": 1452
+        }
+      },
+      {
+        "id": "node_49",
+        "text": null,
+        "content_description": "카메라 검색",
+        "class_name": "android.widget.ImageButton",
+        "view_id": "com.google.android.googlequicksearchbox:id/googleapp_search_widget_lens_btn",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 13,
+        "bounds": {
+          "left": 885,
+          "top": 1308,
+          "right": 1029,
+          "bottom": 1452
+        }
+      },
+      {
+        "id": "node_50",
+        "text": "원스토어",
+        "content_description": "원스토어",
+        "class_name": "android.widget.TextView",
+        "view_id": "com.sec.android.app.launcher:id/home_icon",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 8,
+        "bounds": {
+          "left": 39,
+          "top": 1558,
+          "right": 285,
+          "bottom": 1902
+        }
+      },
+      {
+        "id": "node_51",
+        "text": "Play 스토어",
+        "content_description": "Play 스토어, 알림 1개",
+        "class_name": "android.widget.TextView",
+        "view_id": "com.sec.android.app.launcher:id/home_icon",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 8,
+        "bounds": {
+          "left": 291,
+          "top": 1558,
+          "right": 537,
+          "bottom": 1902
+        }
+      },
+      {
+        "id": "node_52",
+        "text": "Google",
+        "content_description": "Google, 폴더, 알림 12개",
+        "class_name": "android.widget.TextView",
+        "view_id": "com.sec.android.app.launcher:id/home_icon",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 8,
+        "bounds": {
+          "left": 543,
+          "top": 1558,
+          "right": 789,
+          "bottom": 1902
+        }
+      },
+      {
+        "id": "node_61",
+        "text": null,
+        "content_description": "Samsung Free",
+        "class_name": "android.widget.FrameLayout",
+        "view_id": null,
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 7,
+        "bounds": {
+          "left": 432,
+          "top": 1913,
+          "right": 486,
+          "bottom": 1963
+        }
+      },
+      {
+        "id": "node_64",
+        "text": null,
+        "content_description": "3페이지 중 1페이지, 기본 페이지",
+        "class_name": "android.widget.FrameLayout",
+        "view_id": null,
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 7,
+        "bounds": {
+          "left": 486,
+          "top": 1913,
+          "right": 540,
+          "bottom": 1963
+        }
+      },
+      {
+        "id": "node_67",
+        "text": null,
+        "content_description": "3페이지 중 2페이지",
+        "class_name": "android.widget.FrameLayout",
+        "view_id": null,
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 7,
+        "bounds": {
+          "left": 540,
+          "top": 1913,
+          "right": 594,
+          "bottom": 1963
+        }
+      },
+      {
+        "id": "node_70",
+        "text": null,
+        "content_description": "3페이지 중 3페이지, 현재 페이지가 마지막 페이지입니다.",
+        "class_name": "android.widget.FrameLayout",
+        "view_id": null,
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 7,
+        "bounds": {
+          "left": 594,
+          "top": 1913,
+          "right": 648,
+          "bottom": 1963
+        }
+      },
+      {
+        "id": "node_75",
+        "text": "전화",
+        "content_description": "전화",
+        "class_name": "android.widget.TextView",
+        "view_id": "com.sec.android.app.launcher:id/hotseat_icon",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 7,
+        "bounds": {
+          "left": 38,
+          "top": 1971,
+          "right": 368,
+          "bottom": 2216
+        }
+      },
+      {
+        "id": "node_76",
+        "text": "메시지",
+        "content_description": "메시지",
+        "class_name": "android.widget.TextView",
+        "view_id": "com.sec.android.app.launcher:id/hotseat_icon",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 7,
+        "bounds": {
+          "left": 374,
+          "top": 1971,
+          "right": 704,
+          "bottom": 2216
+        }
+      },
+      {
+        "id": "node_77",
+        "text": "카메라",
+        "content_description": "카메라",
+        "class_name": "android.widget.TextView",
+        "view_id": "com.sec.android.app.launcher:id/hotseat_icon",
+        "clickable": true,
+        "editable": false,
+        "scrollable": false,
+        "enabled": true,
+        "checked": null,
+        "depth": 7,
+        "bounds": {
+          "left": 710,
+          "top": 1971,
+          "right": 1040,
+          "bottom": 2216
+        }
+      }
+    ]
+  }
+}
