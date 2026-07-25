@@ -43,6 +43,7 @@ class DeviceToolRegistry(
         BackDeviceTool,
         ScrollDeviceTool,
         TypeTextDeviceTool,
+        OpenScreenDeviceTool,
     ),
 ) {
     private val toolsByName = tools.associateBy { tool -> tool.definition.name }

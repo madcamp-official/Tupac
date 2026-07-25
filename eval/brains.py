@@ -39,7 +39,7 @@ GEMINI_URL = os.environ.get("GEMINI_URL") or (
 
 MAX_QUOTA_WAIT = 90          # 429 재시도에 쓸 누적 대기 상한(초)
 
-ACTIONS = ("tap", "scroll", "type", "back", "done")
+ACTIONS = ("tap", "scroll", "type", "back", "open", "done")
 DIRECTIONS = ("up", "down", "left", "right")
 
 
@@ -201,7 +201,7 @@ class LocalBrain:
         data = _post_json(self.url, payload, {"Content-Type": "application/json"}, timeout=180)
         return data["choices"][0]["message"]["content"]
 
-    def decide(self, goal, screen, observation, history):
+    def decide(self, goal, screen, observation, history, shortcuts=""):
         recent = "\n".join(history[-self.max_history:]) or "(아직 없음)"
         # 마지막 줄을 "답:"으로 끝내면 모델이 곧바로 행동부터 쓰기 시작한다.
         user = (f"{self._instructions(observation)}\n\n목표: {goal}\n\n{screen}\n\n"
@@ -238,7 +238,8 @@ CLOUD_SYSTEM_PROMPT = """당신은 안드로이드 휴대폰을 대신 조작하
 접근성 트리로 읽은 현재 화면을 받고, 목표에 한 걸음 다가가는 행동 하나를 고릅니다.
 화면에 보이는 것만 근거로 삼고, 보이지 않는 것을 추측해 지어내지 마세요."""
 
-CLOUD_RULES = """행동은 다음 다섯 가지뿐입니다.
+CLOUD_RULES = """행동은 다음 여섯 가지뿐입니다.
+- open   : screen 필수. 안드로이드 설정 화면으로 한 번에 점프합니다.
 - tap    : node_id 필수. 화면에 실제로 있는 번호만 씁니다.
 - scroll : direction 필수(up/down/left/right).
 - type   : text 필수. 화면에 [type] 노드가 있을 때만 씁니다.
@@ -246,6 +247,10 @@ CLOUD_RULES = """행동은 다음 다섯 가지뿐입니다.
 - done   : 목표 화면에 도착했을 때. 마지막 한 번만.
 
 판단 지침:
+- 목표가 설정 화면과 관련된 것이면 화면을 눌러 찾아가지 말고 open을 먼저 쓰세요.
+  open 한 번이면 갈 곳을 tap과 scroll로 예닐곱 번 더듬는 것보다 빠르고 정확합니다.
+  단, open은 화면을 열어줄 뿐 설정을 바꾸지는 않습니다. 값을 바꾸려면 도착한
+  화면에서 tap 하세요.
 - 각 줄의 [tap]/[type]/[scroll]은 그 노드에 할 수 있는 행동입니다.
 - 라벨이 목표와 글자 그대로 같지 않아도, 목표로 가는 길목이면 고르세요.
   (예: Wi-Fi는 "연결"이나 "네트워크" 안에, 글자 크기는 "디스플레이" 안에 있습니다)
@@ -271,9 +276,10 @@ CLOUD_SCHEMA = {
         "node_id": {"type": "STRING"},
         "direction": {"type": "STRING", "enum": list(DIRECTIONS)},
         "text": {"type": "STRING"},
+        "screen": {"type": "STRING"},
     },
     "required": ["reason", "action"],
-    "propertyOrdering": ["reason", "action", "node_id", "direction", "text"],
+    "propertyOrdering": ["reason", "action", "node_id", "direction", "text", "screen"],
 }
 
 
@@ -363,9 +369,12 @@ class GeminiBrain:
                 f"maxOutputTokens나 GEMINI_THINKING 설정을 확인하세요.")
         return text
 
-    def decide(self, goal, screen, observation, history):
+    def decide(self, goal, screen, observation, history, shortcuts=""):
         recent = "\n".join(history[-self.max_history:]) or "(아직 없음)"
-        user = (f"{CLOUD_RULES}\n\n목표: {goal}\n\n{screen}\n\n"
+        # 바로가기 목록은 폰이 tools/list로 알려준 것을 그대로 싣는다. 여기에
+        # 하드코딩하면 앱에 화면을 추가했을 때 프롬프트가 따라가지 못한다.
+        menu = f"\n\nopen에 쓸 수 있는 screen 값:\n{shortcuts}" if shortcuts else ""
+        user = (f"{CLOUD_RULES}{menu}\n\n목표: {goal}\n\n{screen}\n\n"
                 f"지금까지 한 행동:\n{recent}")
         _verbose("프롬프트(gemini)", user)
         raw = self._ask(user)

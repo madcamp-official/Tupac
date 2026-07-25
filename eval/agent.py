@@ -73,6 +73,38 @@ def mcp(name, arguments):
     return json.loads(outer["result"]["content"][0]["text"])
 
 
+def mcp_call(method, params):
+    """MCP 서버에 raw JSON-RPC 요청. tools/call 말고 tools/list를 부를 때 쓴다."""
+    token = os.environ.get("TOKEN")
+    if not token:
+        sys.exit("TOKEN 환경변수가 없습니다.")
+    body = json.dumps({"jsonrpc": "2.0", "id": 1,
+                       "method": method, "params": params}).encode()
+    req = urllib.request.Request(
+        MCP_URL, data=body,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        return json.load(response)
+
+
+def shortcut_hint():
+    """폰이 실제로 지원하는 바로가기 목록을 tools/list에서 읽어온다.
+
+    프롬프트에 화면 목록을 하드코딩하면 앱에 화면을 추가했을 때 어긋난다.
+    스키마의 enum과 description이 곧 모델에게 줄 설명이므로 그대로 가져온다.
+    구형 앱이 깔린 폰에는 이 tool이 없을 수 있어, 없으면 조용히 빈 문자열.
+    """
+    try:
+        tools = mcp_call("tools/list", {})["result"]["tools"]
+    except (OSError, KeyError, json.JSONDecodeError):
+        return ""
+    for tool in tools:
+        if tool.get("name") == "device_open_screen":
+            screen = tool["inputSchema"]["properties"]["screen"]
+            return screen.get("description", ", ".join(screen.get("enum", [])))
+    return ""
+
+
 def render_screen(observation, all_nodes):
     """화면을 모델에게 보여줄 간결한 텍스트로. JSON보다 토큰이 훨씬 적다.
 
@@ -138,11 +170,20 @@ def execute(action, observation, dry):
         result = mcp("device_back", {})
         return "성공: 뒤로감" if result.get("success") else f"실패: {result.get('error')}"
 
+    if kind == "open":
+        screen = action.get("screen", "")
+        result = mcp("device_open_screen", {"screen": screen})
+        if result.get("success"):
+            return f"성공: {screen} 화면을 바로 열었음"
+        # 기기에 없는 화면이면 모델이 알아서 눌러 찾아가야 한다. 이유를 그대로 전달.
+        return f"실패: {result.get('message') or result.get('error')}"
+
     return f"알 수 없는 행동: {kind}"
 
 
 def run(goal, brain, max_steps, all_nodes, dry):
     print(f"목표: {goal}  (brain: {brain.name})\n{'=' * 60}")
+    shortcuts = shortcut_hint()      # 폰이 지원하는 바로가기. 스텝마다 바뀌지 않는다.
     history = []
     previous_id = None
     pending = None          # 직전 행동의 이력. 화면이 바뀌었는지는 아직 모른다.
@@ -183,7 +224,7 @@ def run(goal, brain, max_steps, all_nodes, dry):
         screen = render_screen(observation, all_nodes)
         started = time.time()
         try:
-            action, raw = brain.decide(goal, screen, observation, history)
+            action, raw = brain.decide(goal, screen, observation, history, shortcuts)
         except brains.BrainError as error:
             sys.exit(f"모델 호출 실패: {error}\n  {brain.hint(error.status)}")
         elapsed = time.time() - started
@@ -193,7 +234,8 @@ def run(goal, brain, max_steps, all_nodes, dry):
             history.append(f"step{step}: 형식 오류 → 건너뜀")
             continue
 
-        detail = action.get("node_id") or action.get("direction") or action.get("text") or ""
+        detail = (action.get("node_id") or action.get("screen")
+                  or action.get("direction") or action.get("text") or "")
         print(f"[{step}] {action['action']} {detail}"
               f"  ({observation['meaningful_node_count']}노드, {elapsed:.1f}s)")
         if action.get("reason"):
