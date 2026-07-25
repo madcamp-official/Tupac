@@ -67,6 +67,87 @@ def retry_delay(message, fallback):
     return fallback
 
 
+def squash(text):
+    """공백·대소문자를 지운다. "글자 크기"와 "글자크기"를 같게 보려는 것."""
+    return re.sub(r"\s+", "", text.lower())
+
+
+def overlap(text, haystack):
+    """두 문자열이 연속으로 몇 글자나 겹치는지(3글자 미만은 0).
+
+    두 글자 조각을 세는 방식은 우연한 겹침이 쌓여 엉뚱한 걸 고른다. 실측:
+    "Play 스토어 열어줘"가 display(화면, 밝기, 글자 크기...)로 3점을 받았다.
+    연속으로 겹쳐야 인정하면 "블루투스" 같은 진짜 일치만 남는다.
+    """
+    for size in range(len(text), 2, -1):
+        for start in range(len(text) - size + 1):
+            if text[start:start + size] in haystack:
+                return size
+    return 0
+
+
+def shortcut_entries(shortcuts):
+    """"open"/"task" + 키 + 설명 3튜플 목록으로 쪼갠다.
+
+    설명 안에 괄호가 또 있어서(`dial(... (value=전화번호). 걸지는 않음)`) 괄호
+    짝을 세는 방식은 못 쓴다. 대신 "줄 첫머리나 쉼표 뒤의 영문 키 + 여는 괄호"가
+    나오는 위치를 찾아, 그 사이를 통째로 설명으로 본다.
+    """
+    entries = []
+    for block in shortcuts.split("\n\n"):
+        head, _, body = block.partition(":\n")
+        kind = "open" if "screen" in head else "task" if "task" in head else None
+        if not kind:
+            continue
+        starts = list(re.finditer(r"(?:^|,\s*)([a-z_][a-z0-9_]*)\(", body))
+        for index, found in enumerate(starts):
+            end = starts[index + 1].start() if index + 1 < len(starts) else len(body)
+            description = body[found.end():end].rstrip().rstrip(",").rstrip(")")
+            entries.append((kind, found.group(1), description))
+    return entries
+
+
+def obvious_screen(shortcuts, goal):
+    """목표가 어느 설정 화면인지 확실할 때 그 화면을 돌려준다. 아니면 None.
+
+    1.2B에게 20개 중 하나를 고르게 하면 못 고른다. 실측(같은 화면·같은 목표로
+    프롬프트를 네 가지로 바꿔가며 5문제):
+
+        바로가기 목록만 줌            0/5
+        바로가기에 예시를 붙임         2/5
+        목표와 관련된 것만 3개로 추림   1/5
+
+    게다가 실행마다 답이 달라졌다. 프롬프트를 더 만져서 될 문제가 아니라고 봤다.
+    실패 양상도 뚜렷하다. "블루투스 설정 열어줘"에 open settings를 골랐다 —
+    목표에 든 "설정"이라는 낱말에 끌린 것이다.
+
+    반면 이 판단은 규칙으로 충분하다. "블루투스"라는 낱말이 bluetooth 설명에만
+    있으면 그게 답이다. 확실할 때만(1등이 2등보다 뚜렷하게 높을 때) 규칙이 정하고,
+    애매하면 모델에게 넘긴다.
+    """
+    text = squash(goal)
+    scored = []
+    for kind, key, description in shortcut_entries(shortcuts):
+        # settings는 "~ 설정 열어줘"라는 흔한 말투 때문에 어떤 목표에도 걸린다.
+        # 규칙 후보에서 아예 뺀다. 정말 설정 첫 화면을 원하면 모델이 고르면 된다.
+        if kind != "open" or key == "settings":
+            continue
+        # 설명은 부분 일치를 보고, 영문 키는 통째로 들어맞을 때만 인정한다.
+        # 키를 부분 일치로 보면 엉뚱한 게 걸린다. 실측: "Play 스토어 열어줘"가
+        # display에 잡혔다 — "display" 안에 "play"가 들어있기 때문이다.
+        by_description = overlap(text, squash(description))
+        by_key = len(key) if key in text else 0
+        scored.append((max(by_description, by_key), key))
+
+    scored.sort(reverse=True)
+    if not scored:
+        return None
+    best_score, best_key = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0
+    # 1등이 충분히 겹치고 2등보다 뚜렷하게 높을 때만. 애매하면 모델에게 넘긴다.
+    return best_key if best_score >= 3 and best_score > runner_up else None
+
+
 def compact_shortcuts(shortcuts):
     """바로가기 목록에서 설명을 걷어내고 키만 남긴다.
 
@@ -249,6 +330,16 @@ class LocalBrain:
         return data["choices"][0]["message"]["content"]
 
     def decide(self, goal, screen, observation, history, shortcuts=""):
+        # 확실한 설정 화면은 모델에게 묻지 않는다. 물어봤자 못 고른다(obvious_screen
+        # 주석의 실측 참고). 첫 스텝에만 적용한다 — 이미 뭔가 하던 중이라면 목표의
+        # 낱말만 보고 엉뚱한 화면으로 튀어버릴 수 있다.
+        if not history:
+            key = obvious_screen(shortcuts, goal)
+            if key:
+                return ({"action": "open", "screen": key,
+                         "reason": "목표에 이 화면 이름이 있어 규칙으로 골랐습니다"},
+                        f"(규칙) open {key}")
+
         recent = "\n".join(history[-self.max_history:]) or "(아직 없음)"
         # 마지막 줄을 "답:"으로 끝내면 모델이 곧바로 행동부터 쓰기 시작한다.
         user = (f"{self._instructions(observation, shortcuts)}\n\n목표: {goal}\n\n{screen}\n\n"

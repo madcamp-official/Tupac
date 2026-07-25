@@ -36,16 +36,16 @@ object SystemTaskDeviceTool : DeviceTool {
         "dial" to "전화 앱에 번호 입력 (value=전화번호). 걸지는 않음",
         "sms" to "문자 작성 화면 (value=전화번호, text=내용). 보내지는 않음",
         "email" to "메일 작성 화면 (value=이메일 주소, text=내용). 보내지는 않음",
-        "web_search" to "웹 검색 (value=검색어)",
-        "open_url" to "브라우저로 주소 열기 (value=URL)",
-        "map" to "지도에서 장소 찾기 (value=장소 이름)",
+        "web_search" to "웹 검색, 인터넷 찾기 (value=검색어)",
+        "open_url" to "브라우저, 인터넷으로 주소 열기 (value=URL)",
+        "map" to "지도, 길찾기로 장소 찾기 (value=장소 이름)",
         "alarm" to "알람을 바로 등록하고 켠다 (value=HH:MM, text=알람 이름)",
         "timer" to "타이머를 바로 시작한다 (value=분 단위 숫자)",
         "show_alarms" to "알람 목록",
-        "camera" to "카메라",
+        "camera" to "카메라, 사진 촬영",
         "gallery" to "갤러리, 사진 보기",
-        "contacts" to "연락처 목록",
-        "calendar" to "일정 추가 화면 (value=일정 제목)",
+        "contacts" to "연락처, 주소록 목록",
+        "calendar" to "일정, 캘린더 추가 화면 (value=일정 제목)",
     )
 
     override val definition = DeviceToolDefinition(
