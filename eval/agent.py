@@ -35,29 +35,28 @@ LLM_URL = os.environ.get("LLM_URL", "http://127.0.0.1:8080/v1/chat/completions")
 MAX_HISTORY = 3          # 1.2B 모델은 긴 이력을 감당 못 하므로 최근 것만 보여준다
 MAX_PROMPT_NODES = 45
 
-SYSTEM_PROMPT = """당신은 안드로이드 휴대폰을 조작해서 사용자의 목표를 달성합니다.
-매 턴마다 현재 화면의 노드 목록을 보고, 다음 행동 하나를 고릅니다.
+# 작은 모델(1.2B)은 system 역할을 약하게 취급해 긴 지시를 무시한다(실측: 화면과
+# 무관한 조언을 늘어놓음). 지시는 짧게 줄여 user 메시지 안에 넣는다.
+SYSTEM_PROMPT = "휴대폰 화면을 조작하는 도우미. JSON 한 줄로만 답한다."
 
-가능한 행동:
-- tap: 노드를 누른다. 버튼·목록 항목·앱 아이콘에 사용. node_id가 필요.
-- scroll: 화면 밖 내용을 드러낸다. direction은 보고 싶은 방향(down/up/right/left).
-- type: 입력창에 글자를 넣는다. 먼저 입력창을 tap 해야 한다. text가 필요.
-- back: 이전 화면으로 돌아간다.
-- done: 목표가 이미 이 화면에서 달성됐다.
+INSTRUCTIONS = """휴대폰 화면을 보고, 목표에 가까워지는 다음 행동 하나만 고르세요.
+
+행동 종류: tap / scroll / type / back / done
 
 규칙:
-- 목표와 관련된 노드가 화면에 있으면 반드시 tap 하세요. 함부로 scroll 하지 마세요.
-- 목록에 있는 node_id만 쓰세요. 없는 번호를 지어내지 마세요.
-- 라벨이 목표와 정확히 같지 않아도, 목표로 가는 길목이면 그것을 고르세요.
-  (예: 글자 크기는 "디스플레이" 안에 있고, Wi-Fi는 "연결" 안에 있습니다.)
-- 목표한 것이 화면에 전혀 없을 때만 scroll 하세요.
+- 목표와 관련된 항목이 화면에 있으면 그것을 tap 하세요.
+- 라벨이 목표와 똑같지 않아도 목표로 가는 길목이면 고르세요.
+  (글자 크기 → "디스플레이", Wi-Fi → "연결" 안에 있음)
+- 화면에 목표와 관련된 게 전혀 없을 때만 scroll 하세요.
+- 화면 맨 위의 제목은 누르지 마세요. 목록 항목을 고르세요.
+- done은 목표 화면에 확실히 도착했을 때만 쓰세요.
+- 설명하지 말고 JSON 한 줄만 쓰세요. reason은 한 문장.
 
-반드시 JSON 하나만 출력하세요. reason을 먼저 쓰고 그다음 action을 쓰세요.
-예시:
-{"reason": "Wi-Fi는 연결 메뉴 안에 있다", "action": "tap", "node_id": "node_41"}
-{"reason": "목표한 항목이 화면에 없다", "action": "scroll", "direction": "down"}
-{"reason": "검색창에 글자를 넣는다", "action": "type", "text": "와이파이"}
-{"reason": "이미 Wi-Fi 화면에 도착했다", "action": "done"}"""
+형식:
+{"reason":"연결 안에 Wi-Fi가 있다","action":"tap","node_id":"node_41"}
+{"reason":"화면에 없다","action":"scroll","direction":"down"}
+{"reason":"검색창에 입력한다","action":"type","text":"와이파이"}
+{"reason":"Wi-Fi 목록이 보인다","action":"done"}"""
 
 ACTION_SCHEMA = {
     "type": "object",
@@ -155,11 +154,11 @@ def parse_action(raw):
         except json.JSONDecodeError:
             pass
 
-    # 자연어 응답 해석: 언급된 node_id + 행동 키워드
+    # 자연어 응답 해석: 언급된 node_id + 행동 키워드.
+    # done은 여기서 추론하지 않는다. "이미 ~했지만" 같은 흔한 표현을 목표 달성으로
+    # 오인해 루프가 조기 종료된 사례가 있었다. done은 명시적 JSON일 때만 인정한다.
     text = raw.lower()
     node_ids = re.findall(r"node_\d+", raw)
-    if any(k in text for k in ("done", "이미", "달성", "완료했")):
-        return {"action": "done", "reason": raw[:120]}
     if any(k in text for k in ("탭", "클릭", "누르", "선택", "tap")) and node_ids:
         return {"action": "tap", "node_id": node_ids[0], "reason": raw[:120]}
     if any(k in text for k in ("스크롤", "scroll", "스와이프", "내려", "올려")):
@@ -217,8 +216,9 @@ def run(goal, max_steps, all_nodes, dry):
 
         screen = render_screen(observation, all_nodes)
         recent = "\n".join(history[-MAX_HISTORY:]) or "(아직 없음)"
-        user = (f"GOAL: {goal}\n\n{screen}\n\n"
-                f"RECENT ACTIONS:\n{recent}\n\nNext action?")
+        # 마지막 줄을 "JSON:"으로 끝내면 모델이 곧바로 JSON부터 쓰기 시작한다.
+        user = (f"{INSTRUCTIONS}\n\n목표: {goal}\n\n{screen}\n\n"
+                f"최근 행동:\n{recent}\n\nJSON:")
 
         if os.environ.get("AGENT_VERBOSE"):
             print(f"----- 프롬프트(step {step}) -----\n{user}\n{'-' * 30}")
