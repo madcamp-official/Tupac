@@ -232,6 +232,7 @@ class AgentAccessibilityService : AccessibilityService() {
             bounds = bounds,
             depth = depth,
             visibleToUser = node.isVisibleToUser,
+            password = node.isPassword,
         )
 
         for (index in 0 until node.childCount) {

@@ -552,6 +552,7 @@ class PocketMcpHttpServer(
                     .put("view_id", node.viewId ?: JSONObject.NULL)
                     .put("clickable", node.clickable)
                     .put("editable", node.editable)
+                    .put("password", node.password)
                     .put("scrollable", node.scrollable)
                     .put("enabled", node.enabled)
                     .put("checked", node.checked ?: JSONObject.NULL)

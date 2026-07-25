@@ -18,6 +18,10 @@ data class UiNode(
     val depth: Int,
     // 현재 화면에 실제로 보이는지(안드로이드 isVisibleToUser). 가려지거나 화면 밖이면 false.
     val visibleToUser: Boolean = true,
+    // 비밀번호 입력창인지. 이 화면을 클라우드 모델에 보내면 안 된다고 판단하는
+    // 가장 강한 신호다. 값 자체는 접근성 트리에도 안 나오지만, 이런 칸이 있는
+    // 화면이면 주변에 아이디·주민번호 같은 것이 함께 있다고 봐야 한다.
+    val password: Boolean = false,
 )
 
 data class UiSnapshot(

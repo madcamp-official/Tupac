@@ -24,6 +24,7 @@
 
 옵션:
   --brain NAME   판단에 쓸 모델: local(기본) | gemini
+  --fallback N   민감한 화면을 맡길 모델 (기본 local). --brain gemini일 때만 쓰인다
   --steps N      최대 스텝 수 (기본 12)
   --all-nodes    라벨 없는 노드까지 모델에게 보여준다 (기본은 라벨 있는 것만)
   --dry          모델 판단만 보고 실제로 폰을 조작하지는 않는다
@@ -36,6 +37,7 @@ import urllib.error
 import urllib.request
 
 import brains
+import privacy
 
 MCP_PORT = int(os.environ.get("POCKETMCP_PORT", "9911"))
 MCP_URL = f"http://127.0.0.1:{MCP_PORT}/mcp"
@@ -117,7 +119,7 @@ def shortcut_hint():
     return "\n\n".join(blocks)
 
 
-def render_screen(observation, all_nodes):
+def render_screen(observation, all_nodes, redact=False):
     """화면을 모델에게 보여줄 간결한 텍스트로. JSON보다 토큰이 훨씬 적다.
 
     주의: 노드의 clickable 플래그를 그대로 쓰면 안 된다. 설정 앱처럼 리스트
@@ -130,6 +132,8 @@ def render_screen(observation, all_nodes):
     shown = 0
     for node in observation["nodes"]:
         label = (node.get("text") or node.get("content_description") or "").replace("\n", " ")
+        if redact:
+            label = privacy.mask(label)
         if not label and not all_nodes:
             continue                      # 라벨 없는 노드는 모델이 고를 근거가 없다
         if node["editable"]:
@@ -214,8 +218,10 @@ def execute(action, observation, dry):
     return f"알 수 없는 행동: {kind}"
 
 
-def run(goal, brain, max_steps, all_nodes, dry):
-    print(f"목표: {goal}  (brain: {brain.name})\n{'=' * 60}")
+def run(goal, cloud, fallback, max_steps, all_nodes, dry):
+    """cloud로 진행하다가, 민감한 화면을 만나면 fallback(기기 안 모델)으로 넘긴다."""
+    note = "" if cloud is fallback else f", 민감 화면은 {fallback.name}"
+    print(f"목표: {goal}  (brain: {cloud.name}{note})\n{'=' * 60}")
     shortcuts = shortcut_hint()      # 폰이 지원하는 바로가기. 스텝마다 바뀌지 않는다.
     history = []
     previous_id = None
@@ -254,7 +260,20 @@ def run(goal, brain, max_steps, all_nodes, dry):
             print("→ 폰이 잠겨 있거나, 에이전트가 조작할 수 없는 화면일 수 있습니다.")
             return
 
-        screen = render_screen(observation, all_nodes)
+        # 라우팅. 민감한 화면은 기기 밖으로 내보내지 않는다. 판정 단위가 화면인
+        # 이유는 observe가 화면 텍스트를 통째로 주기 때문이다. type만 로컬로
+        # 돌려봐야 이미 입력된 주민번호가 관찰 단계에서 나가버린다.
+        reason = privacy.sensitive_reason(observation)
+        brain = fallback if (reason and cloud.online) else cloud
+        if reason and brain is not cloud:
+            print(f"     ↳ 민감 화면({reason}) → {brain.name} 모델로 처리")
+
+        screen = render_screen(observation, all_nodes, redact=brain.online)
+        # 실수로 민감 화면이 나가는 일을 코드로 막는다. 라우팅 조건을 나중에
+        # 손대다 어긋나면 조용히 유출되므로, 여기서 멈추는 편이 낫다.
+        if brain.online and reason:
+            sys.exit(f"[중단] 민감 화면({reason})을 온라인 모델로 보내려 했습니다.")
+
         started = time.time()
         try:
             action, raw = brain.decide(goal, screen, observation, history, shortcuts)
@@ -297,13 +316,17 @@ def run(goal, brain, max_steps, all_nodes, dry):
 
 def parse_argv(argv):
     """--flag / --flag VALUE 와 목표 문장을 갈라낸다."""
-    options = {"brain": "local", "steps": 12, "all_nodes": False, "dry": False}
+    options = {"brain": "local", "fallback": "local",
+               "steps": 12, "all_nodes": False, "dry": False}
     words = []
     index = 0
     while index < len(argv):
         token = argv[index]
         if token == "--brain" and index + 1 < len(argv):
             options["brain"] = argv[index + 1]
+            index += 2
+        elif token == "--fallback" and index + 1 < len(argv):
+            options["fallback"] = argv[index + 1]
             index += 2
         elif token == "--steps" and index + 1 < len(argv):
             options["steps"] = int(argv[index + 1])
@@ -330,6 +353,10 @@ if __name__ == "__main__":
         sys.exit(0)
     try:
         selected = brains.make_brain(parsed["brain"])
+        # 클라우드로 돌릴 때만 기기 안 모델을 함께 준비한다. 민감 화면을 만나면
+        # 그쪽으로 넘긴다. 애초에 로컬로 돌리는 중이면 넘길 곳이 없다(자기 자신).
+        fallback = brains.make_brain(parsed["fallback"]) if selected.online else selected
     except brains.BrainError as error:
         sys.exit(str(error))
-    run(parsed["goal"], selected, parsed["steps"], parsed["all_nodes"], parsed["dry"])
+    run(parsed["goal"], selected, fallback,
+        parsed["steps"], parsed["all_nodes"], parsed["dry"])
