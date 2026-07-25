@@ -50,13 +50,14 @@ INSTRUCTIONS = """휴대폰 화면을 보고, 목표에 가까워지는 다음 �
 - 화면에 목표와 관련된 게 전혀 없을 때만 scroll 하세요.
 - 화면 맨 위의 제목은 누르지 마세요. 목록 항목을 고르세요.
 - done은 목표 화면에 확실히 도착했을 때만 쓰세요.
-- 설명하지 말고 JSON 한 줄만 쓰세요. reason은 한 문장.
 
-형식:
-{"reason":"연결 안에 Wi-Fi가 있다","action":"tap","node_id":"node_41"}
-{"reason":"화면에 없다","action":"scroll","direction":"down"}
-{"reason":"검색창에 입력한다","action":"type","text":"와이파이"}
-{"reason":"Wi-Fi 목록이 보인다","action":"done"}"""
+답은 아래 다섯 가지 중 하나를 그대로, 한 줄만 쓰세요. 설명하지 마세요.
+
+tap node_41
+scroll down
+type 와이파이
+back
+done"""
 
 ACTION_SCHEMA = {
     "type": "object",
@@ -92,7 +93,7 @@ def ask_model(messages):
     body = json.dumps({
         "messages": messages,
         "temperature": 0.1,          # EXAONE 카드 권장: 한국어는 낮은 온도
-        "max_tokens": 200,
+        "max_tokens": 60,
         # json_schema로 문법을 강제하면 모델이 생각하기 전에 action부터 확정하게 되어
         # (실측) 계속 scroll만 고르는 문제가 있었다. 형식은 프롬프트로 유도하고
         # 파싱은 parse_action에서 관대하게 처리한다.
@@ -144,6 +145,27 @@ def parse_action(raw):
     판단 품질이 무너진다(실측). 그래서 형식은 프롬프트로만 유도하고, 자연어로
     답하더라도 여기서 관대하게 해석한다.
     """
+    # 1순위: "tap node_41" 같은 한 줄 형식. 작은 모델은 JSON 문법(따옴표·중괄호·
+    # 쉼표)을 못 지켜 구조가 무너지는 일이 잦아, 가장 쓰기 쉬운 형식을 먼저 본다.
+    first_line = raw.strip().splitlines()[0].strip() if raw.strip() else ""
+    match = re.match(r"^[\s\-*`]*(tap|scroll|type|back|done)\b[:\s]*(.*)$",
+                     first_line, re.IGNORECASE)
+    if match:
+        verb, arg = match.group(1).lower(), match.group(2).strip().strip('"\'`')
+        if verb == "tap":
+            node = re.search(r"node_\d+", arg) or re.search(r"node_\d+", raw)
+            if node:
+                return {"action": "tap", "node_id": node.group()}
+        elif verb == "scroll":
+            direction = next((d for d in ("up", "down", "left", "right")
+                              if d in arg.lower()), "down")
+            return {"action": "scroll", "direction": direction}
+        elif verb == "type":
+            if arg:
+                return {"action": "type", "text": arg}
+        else:
+            return {"action": verb}
+
     for candidate in (raw, raw[raw.find("{"):raw.rfind("}") + 1] if "{" in raw else ""):
         if not candidate:
             continue
