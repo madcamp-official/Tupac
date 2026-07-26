@@ -145,7 +145,7 @@ def render_screen(observation, all_nodes, redact=False):
     for node in observation["nodes"]:
         label = (node.get("text") or node.get("content_description") or "").replace("\n", " ")
         if redact:
-            label = privacy.redact(label, observation.get("package_name"))
+            label = privacy.redact(label, observation)
         if not label and not all_nodes:
             continue                      # 라벨 없는 노드는 모델이 고를 근거가 없다
         if node["editable"]:

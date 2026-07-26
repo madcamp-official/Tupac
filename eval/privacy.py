@@ -76,16 +76,54 @@ CONTENT_PACKAGES = (
 # 이름은 짧고("연결", "김철수"), 대화 미리보기나 메일 제목은 길다.
 CONTENT_LENGTH = 14
 
+# 항목이 이보다 적으면 대화상자나 로딩 화면으로 본다. 대화 목록은 항목이 많다.
+# 실측: 로그인 실패 안내가 "안내문 + 확인 버튼" 두 개짜리 화면으로 떴다.
+DIALOG_NODES = 6
 
-def redact(label, package):
+# 앱이 사용자에게 건네는 말. 대화 내용이라면 좀처럼 쓰지 않는 낱말만 골랐다.
+# "확인", "다시" 같은 흔한 말은 일부러 뺐다 — 대화에도 자주 나온다.
+UI_MARKERS = (
+    "오류", "실패", "일치하지", "올바르지", "유효하지", "잘못된",
+    "인증", "로그인", "비밀번호", "계정", "권한", "네트워크",
+    "업데이트", "다시 시도", "다시시도", "사용할 수 없", "입력해", "입력하세요",
+)
+
+
+# 앱이 사용자에게 말할 때 쓰는 격식체 어미. 대화에서는 좀처럼 이렇게 끝나지
+# 않는다("...할래?", "...하자", "...야").
+FORMAL_ENDINGS = (
+    "습니다", "합니다", "됩니다", "입니다", "없습니다",
+    "하세요", "주세요", "세요", "십시오", "하십시오", "하시겠습니까",
+)
+
+
+def is_ui_text(label):
+    """앱이 건네는 안내·오류 문구로 보이는지.
+
+    대화 내용과 안내문을 가르는 확실한 표시가 접근성 트리에는 없다. 그래서
+    낱말로 가늠하되, 틀렸을 때 손해가 적은 쪽으로 기운다. 안내문을 가려버리면
+    모델이 왜 실패했는지 몰라 막힐 뿐이지만, 대화를 안 가리면 그대로 유출이다.
+
+    낱말만으로는 샌다. "비밀번호 알려줄게 나중에 지워라" 같은 대화가 그대로
+    나갔다. 그래서 말투까지 함께 본다 — 앱은 격식체로 말하고("...습니다",
+    "...하세요"), 대화는 그렇지 않다. 둘 다 맞아야 UI로 인정한다.
+    """
+    if not any(marker in label for marker in UI_MARKERS):
+        return False
+    stripped = label.rstrip(" .!?~…")
+    return stripped.endswith(FORMAL_ENDINGS)
+
+
+def redact(label, observation):
     """클라우드로 내보낼 라벨을 다듬는다.
 
     두 단계다. 먼저 형식이 뚜렷한 식별번호를 자리표시자로 바꾸고, 그다음
     메신저·메일 같은 앱에서는 긴 글을 내용으로 보고 통째로 가린다.
 
-    길이로 가르는 건 거칠지만, 접근성 트리에는 "이건 대화 미리보기"라는 표시가
-    없다. 대신 잃는 게 적다. 에이전트가 할 일은 "몇 번째 채팅방을 누를지"이지
-    "무슨 대화인지"가 아니다.
+    다만 무턱대고 길이로만 가르면 안내문까지 가려진다(실측: "비밀번호가 일치하지
+    않습니다"가 통째로 사라져, 모델이 로그인 실패 이유를 볼 수 없었다). 그래서
+    두 가지를 예외로 둔다. 항목이 적은 화면(대화상자·로딩)과, 앱이 건네는
+    말로 보이는 문구다.
 
     사람 이름은 남는다. 짧아서 걸러지지 않고, 누를 항목을 가리키려면 필요하다.
     이름도 개인정보라는 점에서 이 방식은 완전하지 않다.
@@ -93,10 +131,15 @@ def redact(label, package):
     label = mask(label)
     if len(label) <= CONTENT_LENGTH:
         return label
-    lowered = (package or "").lower()
-    if any(marker in lowered for marker in CONTENT_PACKAGES):
-        return f"<내용 {len(label)}자>"
-    return label
+
+    package = (observation.get("package_name") or "").lower()
+    if not any(marker in package for marker in CONTENT_PACKAGES):
+        return label
+
+    nodes = observation.get("meaningful_node_count") or len(observation.get("nodes", []))
+    if nodes < DIALOG_NODES or is_ui_text(label):
+        return label
+    return f"<내용 {len(label)}자>"
 
 
 def sensitive_reason(observation):
