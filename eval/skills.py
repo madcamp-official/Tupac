@@ -53,7 +53,10 @@ def field_for(label, entries):
         return None
     best, best_score = None, 0
     for key, description in entries:
-        for word in re.split(r"[,\s]+", squash(description)):
+        # 쪼갠 다음에 공백을 지워야 한다. 먼저 지우면 쪼갤 게 남지 않아서
+        # "이메일 주소"가 "이메일주소" 한 덩어리가 되고, "이메일 또는 전화번호"
+        # 같은 라벨에 안 걸린다(실측: 카카오톡 아이디 칸을 못 찾았다).
+        for word in (squash(part) for part in re.split(r"[,\s]+", description)):
             if len(word) >= 2 and word in haystack and len(word) > best_score:
                 best, best_score = key, len(word)
         if key in haystack and len(key) > best_score:
@@ -78,6 +81,27 @@ def filled_so_far(history):
             if match}
 
 
+def login_fields(observation):
+    """로그인 화면의 입력창을 (노드, 필드) 순서대로.
+
+    라벨로 맞추지 않고 password 플래그를 먼저 본다. 로그인 화면에서 비밀번호가
+    아닌 입력창은 곧 계정 식별자이기 때문이다. 라벨은 앱마다 제각각이라 믿을 게
+    못 된다 — 카카오톡은 아이디 칸을 "이메일 또는 전화번호"라고 부른다. 이걸
+    라벨로 맞추면 email(공통 정보)로 가지만, 정작 필요한 건 이 앱의 username이다.
+
+    화면에 나온 순서 그대로 돌려준다. 대개 아이디가 위, 비밀번호가 아래다.
+
+    라벨 매칭은 쓰지 않는다. 카카오톡 라벨은 email로도 phone으로도 읽히지만
+    둘 다 답이 아니다. 로그인 화면의 입력창은 둘 중 하나뿐이라고 보는 게 맞다.
+    (칸이 여럿인 회원가입 폼은 이 스킬이 다룰 화면이 아니다. 그건 따로 만든다.)
+    """
+    return [
+        (node, "password" if node.get("password") else "username")
+        for node in observation.get("nodes", [])
+        if node.get("editable")
+    ]
+
+
 def login(observation, history, field_hint):
     """로그인 화면에서 할 다음 행동 하나. 맡을 게 없으면 None.
 
@@ -98,11 +122,8 @@ def login(observation, history, field_hint):
     done = filled_so_far(history)
     last = history[-1] if history else ""
 
-    for node in observation.get("nodes", []):
-        if not node.get("editable"):
-            continue
-        field = field_for(label_of(node), entries)
-        if field is None or field in done:
+    for node, field in login_fields(observation):
+        if field in done:
             continue
 
         # 방금 이 칸을 눌렀으면 이제 채운다. 아니면 먼저 누른다.
