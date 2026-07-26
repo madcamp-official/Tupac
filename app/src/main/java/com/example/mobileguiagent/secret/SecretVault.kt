@@ -14,73 +14,130 @@ import javax.crypto.spec.GCMParameterSpec
 /**
  * 개인정보를 기기 안에만 두는 금고.
  *
- * 설계의 핵심은 "값이 폰을 벗어나지 않는다"이다. 에이전트는 "node_14를 password
- * 필드로 채워라"라고만 말하고, 실제 값은 여기서 꺼내 접근성 서비스가 바로
- * 입력한다. 값이 adb를 건너지도, 맥의 파이썬 프로세스에 들어오지도, 로그에
- * 남지도 않는다. 라우팅에 버그가 나도 폰 밖에는 유출될 값 자체가 없다.
+ * 설계의 핵심은 "값이 폰을 벗어나지 않는다"이다. 에이전트는 "이 칸을 password로
+ * 채워라"라고만 말하고, 실제 값은 여기서 꺼내 접근성 서비스가 바로 입력한다.
+ * 값이 adb를 건너지도, 맥의 파이썬 프로세스에 들어오지도, 로그에 남지도 않는다.
  *
  * 암호화는 Android Keystore를 직접 쓴다. androidx.security의
  * EncryptedSharedPreferences가 편하지만 의존성을 새로 받아야 하고, 이 저장소를
  * 빌드하는 환경이 Gradle 네트워크에 제약이 있다. Keystore는 플랫폼 API라
- * 추가로 받을 게 없고, 키가 하드웨어에 남아 앱을 뜯어도 꺼낼 수 없다는 점은
- * 오히려 더 낫다.
+ * 추가로 받을 게 없고, 키가 하드웨어에 남아 앱을 뜯어도 꺼낼 수 없다.
  *
- * 쓰기는 MCP로 열지 않는다. 앱 화면에서만 값을 넣을 수 있다. 포트 8765에
- * 닿을 수 있는 무언가가 값을 덮어쓰거나 넣어보며 떠보는 걸 막기 위해서다.
+ * 값은 두 종류다:
+ *   공통 정보 — 이름·전화번호처럼 서비스와 무관하게 하나면 되는 것
+ *   계정 정보 — 아이디·비밀번호처럼 앱마다 다른 것
+ *
+ * 계정을 앱별로 나눠 두는 이유는 단순한 편의가 아니다. 하나만 두면 카카오톡
+ * 비밀번호가 다른 앱 로그인 화면에 들어갈 수 있다. 서비스는 화면의 패키지
+ * 이름으로 정하고, 부르는 쪽이 고르지 못하게 한다.
  */
 object SecretVault {
-    /**
-     * 다룰 수 있는 필드. 고정 목록으로 두어 모델이 임의의 키를 지어내지 못하게 한다.
-     * 설명은 화면의 라벨과 필드를 잇는 다리다("아이디"가 username인 걸 알아야 한다).
-     */
-    val FIELDS: Map<String, String> = linkedMapOf(
-        "username" to "아이디, 로그인 ID, 사용자 이름",
-        "password" to "비밀번호, 패스워드",
-        "email" to "이메일 주소",
-        "phone" to "휴대폰 번호",
+    /** 서비스와 무관한 값. 키 -> 화면 라벨과 이어줄 설명. */
+    val PROFILE_FIELDS: Map<String, String> = linkedMapOf(
         "name" to "이름, 성명",
+        "phone" to "휴대폰 번호",
+        "email" to "이메일 주소",
         "birthday" to "생년월일",
         "address" to "주소",
         "postcode" to "우편번호",
     )
 
-    /** 값이 실제로 들어있는 필드 이름만. 값은 절대 돌려주지 않는다. */
-    fun storedFields(context: Context): List<String> =
-        FIELDS.keys.filter { field -> prefs(context).contains(field) }
+    /** 앱마다 따로 두는 값. */
+    val ACCOUNT_FIELDS: Map<String, String> = linkedMapOf(
+        "username" to "아이디, 로그인 ID, 사용자 이름",
+        "password" to "비밀번호, 패스워드",
+    )
 
-    fun has(context: Context, field: String): Boolean =
-        FIELDS.containsKey(field) && prefs(context).contains(field)
+    val FIELDS: Map<String, String> = PROFILE_FIELDS + ACCOUNT_FIELDS
 
-    /** 앱 화면에서만 부른다. MCP로는 열지 않는다. */
-    fun put(context: Context, field: String, value: String): Boolean {
-        if (!FIELDS.containsKey(field)) return false
-        return runCatching {
-            prefs(context).edit().putString(field, encrypt(value)).apply()
-            true
-        }.getOrElse { error ->
-            Log.e(TAG, "Unable to store $field", error)
-            false
-        }
+    fun isAccountField(field: String): Boolean = ACCOUNT_FIELDS.containsKey(field)
+
+    // ─────────────────────────────── 공통 정보 ───────────────────────────────
+
+    fun storedProfileFields(context: Context): List<String> =
+        PROFILE_FIELDS.keys.filter { field -> prefs(context).contains(profileKey(field)) }
+
+    fun putProfile(context: Context, field: String, value: String): Boolean {
+        if (!PROFILE_FIELDS.containsKey(field)) return false
+        return write(context, profileKey(field), value)
     }
 
-    fun remove(context: Context, field: String) {
-        prefs(context).edit().remove(field).apply()
+    fun removeProfile(context: Context, field: String) {
+        prefs(context).edit().remove(profileKey(field)).apply()
     }
+
+    // ─────────────────────────────── 계정 정보 ───────────────────────────────
+
+    /** 계정이 등록된 앱 패키지 목록. */
+    fun storedServices(context: Context): List<String> =
+        prefs(context).all.keys
+            .filter { key -> key.startsWith(ACCOUNT_PREFIX) }
+            .mapNotNull { key -> key.removePrefix(ACCOUNT_PREFIX).substringBeforeLast(':', "") }
+            .filter(String::isNotEmpty)
+            .distinct()
+            .sorted()
+
+    fun storedAccountFields(context: Context, service: String): List<String> =
+        ACCOUNT_FIELDS.keys.filter { field -> prefs(context).contains(accountKey(service, field)) }
+
+    fun putAccount(context: Context, service: String, field: String, value: String): Boolean {
+        if (!ACCOUNT_FIELDS.containsKey(field) || service.isBlank()) return false
+        return write(context, accountKey(service, field), value)
+    }
+
+    fun removeService(context: Context, service: String) {
+        val editor = prefs(context).edit()
+        ACCOUNT_FIELDS.keys.forEach { field -> editor.remove(accountKey(service, field)) }
+        editor.apply()
+    }
+
+    // ─────────────────────────────── 읽기 ───────────────────────────────
 
     /**
      * 값을 꺼낸다. 부르는 쪽은 이걸 그대로 화면에 넣기만 해야 하고, MCP 응답이나
      * 로그에 실으면 안 된다. 그러라고 만든 금고가 아니다.
+     *
+     * @param service 계정 필드일 때 어느 앱 것인지. 공통 정보면 무시한다.
      */
-    fun reveal(context: Context, field: String): String? {
-        val stored = prefs(context).getString(field, null) ?: return null
+    fun reveal(context: Context, field: String, service: String? = null): String? {
+        val key = when {
+            isAccountField(field) -> accountKey(service ?: return null, field)
+            PROFILE_FIELDS.containsKey(field) -> profileKey(field)
+            else -> return null
+        }
+        val stored = prefs(context).getString(key, null) ?: return null
         return runCatching { decrypt(stored) }.getOrElse { error ->
             Log.e(TAG, "Unable to read $field", error)
             null
         }
     }
 
+    // ─────────────────────────────── 내부 ───────────────────────────────
+
+    private fun profileKey(field: String) = "$PROFILE_PREFIX$field"
+
+    private fun accountKey(service: String, field: String) = "$ACCOUNT_PREFIX$service:$field"
+
+    private fun write(context: Context, key: String, value: String): Boolean =
+        runCatching {
+            prefs(context).edit().putString(key, encrypt(value)).apply()
+            true
+        }.getOrElse { error ->
+            Log.e(TAG, "Unable to store $key", error)
+            false
+        }
+
     private fun prefs(context: Context) =
-        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).also { store ->
+            // 접두사가 없던 시절의 항목은 어느 서비스 것인지 알 수 없어 쓸 수가 없다.
+            // 남겨두면 복호화되지 않는 값이 계속 쌓이므로 한 번 지운다.
+            val legacy = store.all.keys.filter { key ->
+                !key.startsWith(PROFILE_PREFIX) && !key.startsWith(ACCOUNT_PREFIX)
+            }
+            if (legacy.isNotEmpty()) {
+                store.edit().apply { legacy.forEach(::remove) }.apply()
+            }
+        }
 
     private fun encrypt(value: String): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -124,6 +181,8 @@ object SecretVault {
     private const val ALIAS = "tupac_secret_vault"
     private const val PREFS = "tupac_secrets"
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
+    private const val PROFILE_PREFIX = "profile:"
+    private const val ACCOUNT_PREFIX = "account:"
     private const val IV_BYTES = 12
     private const val TAG_BITS = 128
     private const val TAG = "SecretVault"

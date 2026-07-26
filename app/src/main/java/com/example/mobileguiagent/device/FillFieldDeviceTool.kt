@@ -9,6 +9,7 @@ import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 포커스된 입력창을 금고의 값으로 채운다.
@@ -22,6 +23,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * 먼저 채울 칸을 tap해서 포커스해야 한다. 포커스가 없으면 화면의 첫 입력창에
  * 들어가는데, 로그인 화면처럼 칸이 둘이면 엉뚱한 곳에 비밀번호가 들어간다.
+ *
+ * 아이디·비밀번호는 앱마다 다르다. 어느 앱 계정을 쓸지는 부르는 쪽이 고르지
+ * 못하고, 지금 화면에 떠 있는 앱으로 정해진다. 그래야 한 앱의 자격증명이 다른
+ * 앱 화면에 들어가는 일이 구조적으로 막힌다.
  */
 object FillFieldDeviceTool : DeviceTool {
     const val NAME = "fill_field"
@@ -68,17 +73,31 @@ object FillFieldDeviceTool : DeviceTool {
                 message = "접근성 서비스가 연결되지 않았습니다.",
             )
 
-        val value = SecretVault.reveal(service, field)
-            ?: return DeviceToolResult.Error(
-                code = "FIELD_NOT_SET",
-                message = "$field 값이 저장돼 있지 않습니다. 앱 화면에서 먼저 등록하세요.",
-            )
-
-        // 노드 액션은 메인 스레드에서 (click/type과 동일 패턴).
+        // 어느 서비스 계정인지는 지금 화면의 앱으로 정한다. 부르는 쪽이 고르게 하면
+        // 카카오톡 비밀번호를 다른 앱 로그인 화면에 넣는 일이 생긴다. 화면에 떠
+        // 있는 앱의 계정만 채우면 그 위험이 구조적으로 사라진다.
         val result = AtomicBoolean(false)
+        val missing = AtomicReference<String?>(null)
         val latch = CountDownLatch(1)
         Handler(Looper.getMainLooper()).post {
-            result.set(service.setTextOnFirstEditable(value))
+            val currentApp = service.rootInActiveWindow?.packageName?.toString()
+            val value = when {
+                !SecretVault.isAccountField(field) -> SecretVault.reveal(service, field)
+                currentApp == null -> null
+                else -> SecretVault.reveal(service, field, currentApp)
+            }
+            if (value == null) {
+                missing.set(
+                    if (SecretVault.isAccountField(field)) {
+                        "이 앱($currentApp)의 $field 이(가) 등록돼 있지 않습니다. " +
+                            "앱의 \"내 정보\" 화면에서 이 앱 계정을 먼저 등록하세요."
+                    } else {
+                        "$field 값이 저장돼 있지 않습니다. 앱 화면에서 먼저 등록하세요."
+                    },
+                )
+            } else {
+                result.set(service.setTextOnFirstEditable(value))
+            }
             latch.countDown()
         }
         if (!latch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
@@ -86,6 +105,9 @@ object FillFieldDeviceTool : DeviceTool {
                 code = "FILL_TIMEOUT",
                 message = "입력 응답 시간이 초과됐습니다.",
             )
+        }
+        missing.get()?.let { message ->
+            return DeviceToolResult.Error(code = "FIELD_NOT_SET", message = message)
         }
 
         return if (result.get()) {

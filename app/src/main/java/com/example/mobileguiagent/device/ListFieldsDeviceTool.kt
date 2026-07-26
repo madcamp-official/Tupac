@@ -30,12 +30,17 @@ object ListFieldsDeviceTool : DeviceTool {
                 message = "접근성 서비스가 연결되지 않았습니다.",
             )
 
-        val stored = SecretVault.storedFields(service)
+        val profile = SecretVault.storedProfileFields(service)
+        val services = SecretVault.storedServices(service)
+        val parts = buildList {
+            if (profile.isNotEmpty()) add("공통 정보: ${profile.joinToString()}")
+            if (services.isNotEmpty()) add("계정이 등록된 앱: ${services.joinToString()}")
+        }
         return DeviceToolResult.Success(
-            message = if (stored.isEmpty()) {
-                "등록된 값이 없습니다. 앱 화면에서 먼저 등록하세요."
+            message = if (parts.isEmpty()) {
+                "등록된 값이 없습니다. 앱의 \"내 정보\" 화면에서 먼저 등록하세요."
             } else {
-                "등록된 필드: ${stored.joinToString()}"
+                parts.joinToString(" / ")
             },
         )
     }
