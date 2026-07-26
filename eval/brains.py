@@ -42,7 +42,7 @@ GEMINI_URL = os.environ.get("GEMINI_URL") or (
 MAX_QUOTA_WAIT = 90          # 429 재시도에 쓸 누적 대기 상한(초)
 
 ACTIONS = ("tap", "scroll", "type", "back", "open", "task", "launch",
-           "list_apps", "done")
+           "list_apps", "fill", "skill", "wait", "done")
 DIRECTIONS = ("up", "down", "left", "right")
 
 
@@ -206,8 +206,9 @@ def parse_action(raw):
     # 1순위: "tap node_41" 같은 한 줄 형식. 작은 모델은 JSON 문법(따옴표·중괄호·
     # 쉼표)을 못 지켜 구조가 무너지는 일이 잦아, 가장 쓰기 쉬운 형식을 먼저 본다.
     first_line = raw.strip().splitlines()[0].strip() if raw.strip() else ""
-    match = re.match(r"^[\s\-*`]*(tap|scroll|type|back|open|task|launch|done)\b[:\s]*(.*)$",
-                     first_line, re.IGNORECASE)
+    match = re.match(
+        r"^[\s\-*`]*(tap|scroll|type|back|open|task|launch|fill|skill|wait|done)\b[:\s]*(.*)$",
+        first_line, re.IGNORECASE)
     if match:
         verb, arg = match.group(1).lower(), match.group(2).strip().strip('"\'`')
         if verb == "tap":
@@ -234,6 +235,14 @@ def parse_action(raw):
         elif verb == "launch":
             if arg:
                 return {"action": "launch", "app": arg}
+        elif verb == "fill":
+            # "fill node_16 username" — 칸과 금고 필드를 함께 지목한다.
+            parts = arg.split()
+            if len(parts) >= 2 and parts[0].startswith("node_"):
+                return {"action": "fill", "node_id": parts[0], "field": parts[1]}
+        elif verb == "skill":
+            if arg:
+                return {"action": "skill", "name": arg.split()[0]}
         else:
             return {"action": verb}
 
@@ -308,9 +317,11 @@ class LocalBrain:
              if (n.get("text") or n.get("content_description"))),
             "node_1",
         )
-        options = [f"tap {example}", "scroll down", "scroll up", "back", "done"]
+        options = [f"tap {example}", "scroll down", "scroll up", "back",
+                   "skill 절차서이름", "done"]
         if any(n["editable"] for n in observation["nodes"]):
             options.insert(1, "type 넣을글자")
+            options.insert(2, "fill node_번호 필드이름")
         menu = compact_shortcuts(shortcuts)
         if menu:
             options = menu.splitlines() + options
@@ -329,7 +340,7 @@ class LocalBrain:
         data = _post_json(self.url, payload, {"Content-Type": "application/json"}, timeout=180)
         return data["choices"][0]["message"]["content"]
 
-    def decide(self, goal, screen, observation, history, shortcuts=""):
+    def decide(self, goal, screen, observation, history, shortcuts="", extra=""):
         # 확실한 설정 화면은 모델에게 묻지 않는다. 물어봤자 못 고른다(obvious_screen
         # 주석의 실측 참고). 첫 스텝에만 적용한다 — 이미 뭔가 하던 중이라면 목표의
         # 낱말만 보고 엉뚱한 화면으로 튀어버릴 수 있다.
@@ -341,9 +352,10 @@ class LocalBrain:
                         f"(규칙) open {key}")
 
         recent = "\n".join(history[-self.max_history:]) or "(아직 없음)"
+        block = f"\n\n{extra}" if extra else ""
         # 마지막 줄을 "답:"으로 끝내면 모델이 곧바로 행동부터 쓰기 시작한다.
-        user = (f"{self._instructions(observation, shortcuts)}\n\n목표: {goal}\n\n{screen}\n\n"
-                f"최근 행동:\n{recent}\n\n답:")
+        user = (f"{self._instructions(observation, shortcuts)}{block}\n\n목표: {goal}\n\n"
+                f"{screen}\n\n최근 행동:\n{recent}\n\n답:")
         _verbose("프롬프트(local)", user)
 
         messages = [{"role": "system", "content": LOCAL_SYSTEM_PROMPT},
@@ -382,6 +394,11 @@ CLOUD_RULES = """행동은 다음뿐입니다. 위쪽 네 개를 먼저 고려�
               값이 필요한 작업은 value에, 문자 내용이나 알람 이름은 text에 씁니다.
 - launch    : app 필수. 설치된 앱을 이름으로 실행합니다(예: app="카카오톡").
 - list_apps : 어떤 앱이 깔려 있는지 모를 때. app에 검색어를 넣으면 걸러 봅니다.
+- skill  : name 필수. 로그인·개인정보 폼처럼 아는 상황을 만나면 먼저 절차서를
+             불러 그대로 따르세요. 절차서 없이 개인정보 칸을 건드리지 마세요.
+- fill   : node_id와 field 필수. 폰에 저장된 개인정보를 그 입력창에 넣습니다.
+             값은 폰 안에서 처리되며 당신은 값을 보지 못합니다.
+- wait   : 화면 전환이나 처리 결과를 기다립니다.
 - tap    : node_id 필수. 화면에 실제로 있는 번호만 씁니다.
 - scroll : direction 필수(up/down/left/right).
 - type   : text 필수. 화면에 [type] 노드가 있을 때만 씁니다.
@@ -430,10 +447,12 @@ CLOUD_SCHEMA = {
         "task": {"type": "STRING"},
         "value": {"type": "STRING"},
         "app": {"type": "STRING"},
+        "field": {"type": "STRING"},
+        "name": {"type": "STRING"},
     },
     "required": ["reason", "action"],
     "propertyOrdering": ["reason", "action", "node_id", "direction", "text", "screen",
-                         "task", "value", "app"],
+                         "task", "value", "app", "field", "name"],
 }
 
 
@@ -523,12 +542,13 @@ class GeminiBrain:
                 f"maxOutputTokens나 GEMINI_THINKING 설정을 확인하세요.")
         return text
 
-    def decide(self, goal, screen, observation, history, shortcuts=""):
+    def decide(self, goal, screen, observation, history, shortcuts="", extra=""):
         recent = "\n".join(history[-self.max_history:]) or "(아직 없음)"
         # 바로가기 목록은 폰이 tools/list로 알려준 것을 그대로 싣는다. 여기에
         # 하드코딩하면 앱에 화면을 추가했을 때 프롬프트가 따라가지 못한다.
-        menu = f"\n\nopen에 쓸 수 있는 screen 값:\n{shortcuts}" if shortcuts else ""
-        user = (f"{CLOUD_RULES}{menu}\n\n목표: {goal}\n\n{screen}\n\n"
+        menu = f"\n\n{shortcuts}" if shortcuts else ""
+        block = f"\n\n{extra}" if extra else ""
+        user = (f"{CLOUD_RULES}{menu}{block}\n\n목표: {goal}\n\n{screen}\n\n"
                 f"지금까지 한 행동:\n{recent}")
         _verbose("프롬프트(gemini)", user)
         raw = self._ask(user)

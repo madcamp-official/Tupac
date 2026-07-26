@@ -28,7 +28,7 @@
   --steps N      최대 스텝 수 (기본 12)
   --all-nodes    라벨 없는 노드까지 모델에게 보여준다 (기본은 라벨 있는 것만)
   --dry          모델 판단만 보고 실제로 폰을 조작하지는 않는다
-  --no-submit    로그인 스킬이 값만 채우고 제출 버튼은 누르지 않는다
+  --no-submit    절차서에 "제출 버튼을 누르지 말라"는 지시를 덧붙인다
 """
 import json
 import os
@@ -150,7 +150,9 @@ def render_screen(observation, all_nodes, redact=False):
         if not label and not all_nodes:
             continue                      # 라벨 없는 노드는 모델이 고를 근거가 없다
         if node["editable"]:
-            flag = "type"
+            # 비밀번호 칸을 표시해줘야 모델이 절차서의 "비밀번호가 아닌 칸이
+            # 아이디"라는 구분을 화면에서 해낼 수 있다.
+            flag = "type,비밀번호" if node.get("password") else "type"
         elif node["scrollable"] and not node["clickable"] and not label:
             flag = "scroll"
         else:
@@ -246,12 +248,14 @@ def execute(action, observation, dry):
     return f"알 수 없는 행동: {kind}"
 
 
-def run(goal, cloud, fallback, max_steps, all_nodes, dry, auto_submit=True):
+def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
     """cloud로 진행하다가, 민감한 화면을 만나면 fallback(기기 안 모델)으로 넘긴다."""
     note = "" if cloud is fallback else f", 민감 화면은 {fallback.name}"
     print(f"목표: {goal}  (brain: {cloud.name}{note})\n{'=' * 60}")
     shortcuts = shortcut_hint()      # 폰이 지원하는 바로가기. 스텝마다 바뀌지 않는다.
-    fields = field_hint()            # 금고가 다루는 필드. 스킬이 쓴다.
+    fields = field_hint()            # 금고가 다루는 필드. 절차서에 함께 싣는다.
+    catalog = skills.load()          # 절차서 목록. 모델이 skill 이름 으로 불러온다.
+    active_skill = None
     history = []
     previous_id = None
     pending = None          # 직전 행동의 이력. 화면이 바뀌었는지는 아직 모른다.
@@ -307,16 +311,20 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, auto_submit=True):
         if brain.online and reason:
             sys.exit(f"[중단] 민감 화면({reason})을 온라인 모델로 보내려 했습니다.")
 
-        # 정해진 절차로 끝나는 일은 모델에게 묻지 않는다. 로그인처럼 개인정보를
-        # 다루는 화면이 그렇다. 스킬이 맡지 않겠다고 할 때만 모델을 부른다.
+        # 스킬(절차서) 문맥. 목록은 늘 보여주고, 모델이 불러온 절차서가 있으면
+        # 그 본문을 매 스텝 싣는다. 판단 주체는 모델이다 — 코드는 절차서를
+        # 건네줄 뿐, 화면을 보고 가로채지 않는다.
+        extra_parts = [skills.catalog_text(catalog)]
+        if active_skill:
+            extra_parts.append(skills.active_text(
+                active_skill, catalog[active_skill], fields, no_submit))
+        extra = "\n\n".join(part for part in extra_parts if part)
+
         started = time.time()
-        action = skills.next_action(observation, history, fields, auto_submit)
-        raw = "(skill)"
-        if action is None:
-            try:
-                action, raw = brain.decide(goal, screen, observation, history, shortcuts)
-            except brains.BrainError as error:
-                sys.exit(f"모델 호출 실패: {error}\n  {brain.hint(error.status)}")
+        try:
+            action, raw = brain.decide(goal, screen, observation, history, shortcuts, extra)
+        except brains.BrainError as error:
+            sys.exit(f"모델 호출 실패: {error}\n  {brain.hint(error.status)}")
         elapsed = time.time() - started
 
         if action is None:
@@ -334,6 +342,19 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, auto_submit=True):
               f"  ({observation['meaningful_node_count']}노드, {elapsed:.1f}s)")
         if action.get("reason"):
             print(f"     이유: {action['reason'][:100]}")
+
+        if action["action"] == "skill":
+            name = action.get("name", "")
+            if name in catalog:
+                active_skill = name
+                outcome = f"성공: {name} 절차서를 불러왔습니다. 위 절차를 따르세요"
+            else:
+                outcome = (f"실패: {name} 절차서는 없습니다. "
+                           f"있는 것: {', '.join(catalog)}")
+            print(f"     결과: {outcome}")
+            pending = f"step{step}: skill {name} → {outcome}"
+            pending_kind = "skill"
+            continue
 
         if action["action"] == "done":
             who = "스킬이" if raw == "(skill)" else "모델이"
@@ -403,4 +424,4 @@ if __name__ == "__main__":
     except brains.BrainError as error:
         sys.exit(str(error))
     run(parsed["goal"], selected, fallback, parsed["steps"],
-        parsed["all_nodes"], parsed["dry"], not parsed["no_submit"])
+        parsed["all_nodes"], parsed["dry"], parsed["no_submit"])
