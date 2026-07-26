@@ -34,11 +34,16 @@ import javax.crypto.spec.GCMParameterSpec
 object SecretVault {
     /** 서비스와 무관한 값. 키 -> 화면 라벨과 이어줄 설명. */
     val PROFILE_FIELDS: Map<String, String> = linkedMapOf(
-        "name" to "이름, 성명",
-        "phone" to "휴대폰 번호",
-        "email" to "이메일 주소",
-        "birthday" to "생년월일",
-        "address" to "주소",
+        // 설명은 화면 라벨과 필드를 잇는 다리다. 사람이 실제로 쓰는 말을 쉼표로
+        // 나열한다. 스킬은 쉼표 단위로만 끊어 보므로 "휴대폰 번호"처럼 띄어쓴
+        // 말도 한 덩어리로 다뤄진다.
+        "name" to "이름, 성명, 받는분, 받는사람, 수령인",
+        "phone" to "휴대폰 번호, 연락처, 전화번호",
+        "email" to "이메일 주소, 메일 주소",
+        "birthday" to "생년월일, 생일",
+        "address" to "주소, 기본주소, 도로명주소, 자택주소",
+        // 상세주소를 따로 두지 않으면 "주소"에 걸려 전체 주소가 들어간다.
+        "address_detail" to "상세주소, 나머지 주소, 동호수",
         "postcode" to "우편번호",
     )
 

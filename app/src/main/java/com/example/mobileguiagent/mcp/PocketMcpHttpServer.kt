@@ -371,6 +371,14 @@ class PocketMcpHttpServer(
         )
     }
 
+    /** 관찰할 때 본 그 항목이 지금도 같은 자리에 같은 내용으로 있는지. */
+    private fun isStillThere(target: UiNode, current: UiSnapshot): Boolean {
+        val now = current.nodes.firstOrNull { node -> node.id == target.id } ?: return false
+        return now.text == target.text &&
+            now.contentDescription == target.contentDescription &&
+            now.bounds == target.bounds
+    }
+
     private fun clickNode(arguments: JSONObject): JSONObject {
         val snapshotId = arguments.optString("snapshot_id")
         val nodeId = arguments.optString("node_id")
@@ -380,20 +388,27 @@ class PocketMcpHttpServer(
             return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
         }
 
-        val current = captureSnapshotOnMainThread()
-            ?: return toolError("NO_ACTIVE_WINDOW", "현재 UI 트리를 읽을 수 없습니다.")
-        if (
-            current.packageName != observed.packageName ||
-            current.fingerprint.hash != snapshotId
-        ) {
-            lastSnapshot.set(current)
-            return toolError("SCREEN_CHANGED", "관찰 후 화면이 바뀌어 클릭을 거부했습니다.")
-        }
-
         val target = observed.nodes.firstOrNull { it.id == nodeId }
             ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
         if (!target.enabled) {
             return toolError("NODE_DISABLED", "비활성 노드는 클릭할 수 없습니다.")
+        }
+
+        val current = captureSnapshotOnMainThread()
+            ?: return toolError("NO_ACTIVE_WINDOW", "현재 UI 트리를 읽을 수 없습니다.")
+        // 화면 전체가 그대로인지가 아니라, 누르려는 그 항목이 그대로인지를 본다.
+        // 전체 지문으로 보면 시계나 타이머처럼 매초 바뀌는 값 하나 때문에 어떤
+        // 클릭도 통과하지 못한다(실측: 타이머 화면의 "취소"를 누를 수 없어 좌표
+        // 탭으로 우회해야 했다). 시계가 있는 화면 전반이 그렇다.
+        //
+        // 이 검사가 막으려던 건 "관찰한 뒤 화면이 넘어가서 엉뚱한 걸 누르는 것"인데,
+        // 그건 누를 항목의 위치와 내용이 그대로인지만 봐도 알 수 있다.
+        if (current.packageName != observed.packageName || !isStillThere(target, current)) {
+            lastSnapshot.set(current)
+            return toolError(
+                "SCREEN_CHANGED",
+                "누르려던 항목이 사라지거나 자리를 옮겨 클릭을 거부했습니다.",
+            )
         }
 
         val action = clickSnapshotNodeOnMainThread(target, observed.packageName)
