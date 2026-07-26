@@ -51,7 +51,7 @@ WAIT_SECONDS = 2.0       # wait 행동이 쉬는 시간
 
 def describe(observation):
     """화면에 보이는 라벨을 한 줄로. 사람이 어느 화면인지 알아보게만 하면 된다."""
-    labels = [(n.get("text") or n.get("content_description") or "").strip()
+    labels = [(n.get("text") or n.get("content_description") or n.get("hint") or "").strip()
               for n in observation.get("nodes", [])]
     return " / ".join(label for label in labels if label)[:150]
 
@@ -143,7 +143,8 @@ def render_screen(observation, all_nodes, redact=False):
     lines = [f"SCREEN (app: {observation['package_name']})"]
     shown = 0
     for node in observation["nodes"]:
-        label = (node.get("text") or node.get("content_description") or "").replace("\n", " ")
+        label = (node.get("text") or node.get("content_description")
+                 or node.get("hint") or "").replace("\n", " ")
         if redact:
             label = privacy.redact(label, observation)
         if not label and not all_nodes:

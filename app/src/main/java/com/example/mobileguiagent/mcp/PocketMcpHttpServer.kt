@@ -563,6 +563,7 @@ class PocketMcpHttpServer(
                     .put("id", node.id)
                     .put("text", node.text ?: JSONObject.NULL)
                     .put("content_description", node.contentDescription ?: JSONObject.NULL)
+                    .put("hint", node.hint ?: JSONObject.NULL)
                     .put("class_name", node.className ?: JSONObject.NULL)
                     .put("view_id", node.viewId ?: JSONObject.NULL)
                     .put("clickable", node.clickable)

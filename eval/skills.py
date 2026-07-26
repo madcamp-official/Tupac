@@ -21,7 +21,13 @@ LOGIN_MARKERS = ("로그인", "signin", "sign in", "log in", "login")
 
 
 def label_of(node):
-    return (node.get("text") or node.get("content_description") or "").strip()
+    """그 칸이 무엇인지 알려주는 글자.
+
+    빈 입력창은 text가 비어 있고 안내 문구가 hint에만 있는 경우가 있다(크롬의
+    웹 폼이 그렇다). 셋 다 봐야 어느 앱에서든 칸을 알아본다.
+    """
+    return (node.get("text") or node.get("content_description")
+            or node.get("hint") or "").strip()
 
 
 def squash(text):

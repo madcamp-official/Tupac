@@ -7,6 +7,11 @@ data class UiNode(
     val id: String,
     val text: String?,
     val contentDescription: String?,
+    // 빈 입력창의 안내 문구("받는사람", "비밀번호를 입력하세요"). 값이 들어가기
+    // 전에는 이것만이 그 칸이 무엇인지 알려준다. 앱마다 text에 넣기도 하고
+    // hintText에 넣기도 해서 둘 다 읽어야 한다(실측: 크롬의 웹 폼은 text와
+    // contentDescription이 모두 비어 있고 hintText에만 라벨이 있었다).
+    val hint: String? = null,
     val className: String?,
     val viewId: String?,
     val clickable: Boolean,

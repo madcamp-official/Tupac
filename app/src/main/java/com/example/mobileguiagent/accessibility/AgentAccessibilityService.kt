@@ -222,6 +222,7 @@ class AgentAccessibilityService : AccessibilityService() {
             id = "node_${output.size}",
             text = node.text?.toString(),
             contentDescription = node.contentDescription?.toString(),
+            hint = node.hintText?.toString(),
             className = node.className?.toString(),
             viewId = node.viewIdResourceName,
             clickable = node.isClickable,

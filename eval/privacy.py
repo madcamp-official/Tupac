@@ -49,7 +49,8 @@ SENSITIVE_PACKAGES = (
 
 
 def label_of(node):
-    return (node.get("text") or node.get("content_description") or "").strip()
+    return (node.get("text") or node.get("content_description")
+            or node.get("hint") or "").strip()
 
 
 def mask(text):
