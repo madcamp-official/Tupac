@@ -38,6 +38,7 @@ import urllib.request
 
 import brains
 import privacy
+import skills
 
 MCP_PORT = int(os.environ.get("POCKETMCP_PORT", "9911"))
 MCP_URL = f"http://127.0.0.1:{MCP_PORT}/mcp"
@@ -94,6 +95,15 @@ SHORTCUT_SOURCES = (
     ("open에 쓸 수 있는 screen 값", "device_open_screen", "screen"),
     ("task에 쓸 수 있는 값", "device_start_task", "task"),
 )
+
+
+def field_hint():
+    """금고가 다루는 필드 설명. 스킬이 화면 라벨과 필드를 잇는 데 쓴다."""
+    try:
+        tools = {tool["name"]: tool for tool in mcp_call("tools/list", {})["result"]["tools"]}
+        return tools["device_fill_field"]["inputSchema"]["properties"]["field"]["description"]
+    except (OSError, KeyError, json.JSONDecodeError):
+        return ""
 
 
 def shortcut_hint():
@@ -211,6 +221,12 @@ def execute(action, observation, dry):
         # 못 찾았으면 폰이 비슷한 앱 이름을 알려준다. 모델이 다음 스텝에 고쳐 부른다.
         return f"실패: {result.get('message') or result.get('error')}"
 
+    if kind == "fill":
+        result = mcp("device_fill_field", {"field": action.get("field", "")})
+        # 성공 메시지에도 값은 없다. 폰이 "password 값을 입력했습니다"까지만 준다.
+        return (f"성공: {result.get('message')}" if result.get("success")
+                else f"실패: {result.get('message') or result.get('error')}")
+
     if kind == "list_apps":
         result = mcp("device_list_apps", {"query": action.get("app", "")})
         return f"설치된 앱: {result.get('message')}"
@@ -223,6 +239,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry):
     note = "" if cloud is fallback else f", 민감 화면은 {fallback.name}"
     print(f"목표: {goal}  (brain: {cloud.name}{note})\n{'=' * 60}")
     shortcuts = shortcut_hint()      # 폰이 지원하는 바로가기. 스텝마다 바뀌지 않는다.
+    fields = field_hint()            # 금고가 다루는 필드. 스킬이 쓴다.
     history = []
     previous_id = None
     pending = None          # 직전 행동의 이력. 화면이 바뀌었는지는 아직 모른다.
@@ -274,11 +291,16 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry):
         if brain.online and reason:
             sys.exit(f"[중단] 민감 화면({reason})을 온라인 모델로 보내려 했습니다.")
 
+        # 정해진 절차로 끝나는 일은 모델에게 묻지 않는다. 로그인처럼 개인정보를
+        # 다루는 화면이 그렇다. 스킬이 맡지 않겠다고 할 때만 모델을 부른다.
         started = time.time()
-        try:
-            action, raw = brain.decide(goal, screen, observation, history, shortcuts)
-        except brains.BrainError as error:
-            sys.exit(f"모델 호출 실패: {error}\n  {brain.hint(error.status)}")
+        action = skills.next_action(observation, history, fields)
+        raw = "(skill)"
+        if action is None:
+            try:
+                action, raw = brain.decide(goal, screen, observation, history, shortcuts)
+            except brains.BrainError as error:
+                sys.exit(f"모델 호출 실패: {error}\n  {brain.hint(error.status)}")
         elapsed = time.time() - started
 
         if action is None:
@@ -289,7 +311,8 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry):
         # 모델이 넘긴 인자를 로그에 남긴다. 없으면 실패했을 때 무엇을 넘겼는지
         # 알 수가 없다(실측: task만 찍히고 web_search인지 timer인지 안 보였다).
         detail = " ".join(str(action.get(key)) for key in
-                          ("node_id", "screen", "task", "value", "app", "direction", "text")
+                          ("node_id", "screen", "task", "value", "app", "field",
+                           "direction", "text")
                           if action.get(key))
         print(f"[{step}] {action['action']} {detail}"
               f"  ({observation['meaningful_node_count']}노드, {elapsed:.1f}s)")
