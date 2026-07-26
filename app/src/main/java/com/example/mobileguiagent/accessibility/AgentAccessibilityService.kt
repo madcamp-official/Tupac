@@ -340,9 +340,19 @@ class AgentAccessibilityService : AccessibilityService() {
         )
     }
 
+    /**
+     * 지금 포커스된 입력창에 글자를 넣는다. 포커스가 없으면 첫 번째 입력창.
+     *
+     * "첫 번째 입력창"만 보면 칸이 여럿인 화면에서 엉뚱한 데로 들어간다. 로그인
+     * 화면이 대표적이다 — 비밀번호를 넣으려는데 아이디 칸이 첫 번째라 거기에
+     * 들어가고, 아이디가 화면에 그대로 노출된다. 개인정보를 다루려면 어느 칸에
+     * 넣는지가 분명해야 하므로 포커스를 먼저 본다.
+     */
     fun setTextOnFirstEditable(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
-        val editable = findFirstNode(root) { node -> node.isEditable && node.isEnabled }
+        val editable = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?.takeIf { node -> node.isEditable && node.isEnabled }
+            ?: findFirstNode(root) { node -> node.isEditable && node.isEnabled }
             ?: return false
         val arguments = Bundle().apply {
             putCharSequence(

@@ -47,6 +47,8 @@ class DeviceToolRegistry(
         SystemTaskDeviceTool,
         LaunchAppDeviceTool,
         ListAppsDeviceTool,
+        FillFieldDeviceTool,
+        ListFieldsDeviceTool,
     ),
 ) {
     private val toolsByName = tools.associateBy { tool -> tool.definition.name }
