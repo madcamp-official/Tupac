@@ -53,10 +53,10 @@ def field_for(label, entries):
         return None
     best, best_score = None, 0
     for key, description in entries:
-        # 쪼갠 다음에 공백을 지워야 한다. 먼저 지우면 쪼갤 게 남지 않아서
-        # "이메일 주소"가 "이메일주소" 한 덩어리가 되고, "이메일 또는 전화번호"
-        # 같은 라벨에 안 걸린다(실측: 카카오톡 아이디 칸을 못 찾았다).
-        for word in (squash(part) for part in re.split(r"[,\s]+", description)):
+        # 쉼표로만 쪼갠다. 공백으로도 쪼개면 여러 낱말로 된 이름이 조각나서
+        # 엉뚱한 필드에 걸린다. 실측: "이메일 주소"가 ["이메일", "주소"]로
+        # 갈라져, 배송지 화면의 "주소" 칸이 email로 잡혔다.
+        for word in (squash(part) for part in description.split(",")):
             if len(word) >= 2 and word in haystack and len(word) > best_score:
                 best, best_score = key, len(word)
         if key in haystack and len(key) > best_score:
@@ -238,6 +238,79 @@ def login(observation, history, field_hint, auto_submit=True):
                       + ("" if auto_submit else " 로그인 버튼은 직접 눌러주세요")}
 
 
+# 로그인 스킬이 다룰 필드. 앱의 SecretVault.ACCOUNT_FIELDS와 같은 목록이다.
+# 폼 스킬이 이걸 건드리면 안 된다 — 배송지 화면에 아이디를 넣을 일은 없고,
+# 회원가입 폼의 비밀번호는 "그 앱에 등록된 계정"이 아직 없으니 채울 값도 없다.
+ACCOUNT_FIELDS = ("username", "password")
+
+# 라벨이 금고 필드와 맞아떨어지는 칸이 이만큼은 있어야 폼으로 본다. 하나만
+# 맞으면 검색창 하나 있는 화면까지 폼으로 오인한다.
+MIN_FORM_FIELDS = 2
+
+
+def form_targets(observation, entries):
+    """라벨로 금고 필드를 알아낸 (노드, 필드) 목록.
+
+    로그인과 달리 여기서는 라벨이 유일한 단서다. 배송지 화면의 칸들은 플래그로
+    구분되지 않는다 — 이름도 전화번호도 주소도 그냥 editable일 뿐이다. 그래서
+    확실히 맞는 것만 고르고 나머지는 건드리지 않는다. 모르는 칸을 채우느니
+    비워두는 편이 낫다(상세주소처럼 금고에 값이 없는 칸도 그렇게 넘어간다).
+    """
+    found = []
+    for node in observation.get("nodes", []):
+        if not node.get("editable") or node.get("password"):
+            continue
+        field = field_for(label_of(node), entries)
+        if field and field not in ACCOUNT_FIELDS:
+            found.append((node, field))
+    return found
+
+
+def fill_form(observation, history, field_hint):
+    """이름·전화번호·주소 같은 칸이 있는 폼을 금고 값으로 채운다.
+
+    배송지 입력, 회원가입, 주소 등록이 모두 같은 구조라 하나로 다룬다.
+
+    제출하지 않는다. 로그인은 실패해도 다시 하면 되지만 이런 폼은 주문이나
+    가입으로 이어진다. 되돌릴 수 없는 쪽은 사람이 누른다.
+    """
+    entries = field_entries(field_hint)
+    if not entries:
+        return None
+
+    done = filled_so_far(history)
+    targets = form_targets(observation, entries)
+
+    # 채우기 전에만 "폼인가"를 따진다. 칸을 채우고 나면 라벨이 값으로 바뀌어
+    # ("이름" -> "박민수") 더 이상 알아볼 수 없고, 그때 손을 놓으면 마무리를
+    # 모델이 하게 된다(실측: 마지막 done만 모델이 냈다). 한 번 맡았으면 끝까지 맡는다.
+    if not done and len(targets) < MIN_FORM_FIELDS:
+        return None
+
+    last = history[-1] if history else ""
+
+    for node, field in targets:
+        if field in done:
+            continue
+        if f"tap {node['id']} →" in last and "성공" in last:
+            return {"action": "fill", "field": field,
+                    "reason": f"{field} 칸에 금고 값을 넣습니다 (값은 폰 안에서 처리)"}
+        return {"action": "tap", "node_id": node["id"],
+                "reason": f"{field} 칸을 누릅니다"}
+
+    if not done:
+        return None
+    return {"action": "done",
+            "reason": f"{', '.join(sorted(done))}을(를) 채웠습니다. "
+                      f"내용을 확인하고 제출은 직접 해주세요"}
+
+
 def next_action(observation, history, field_hint, auto_submit=True):
-    """스킬이 맡을 수 있으면 행동을, 아니면 None을 돌려준다."""
-    return login(observation, history, field_hint, auto_submit)
+    """스킬이 맡을 수 있으면 행동을, 아니면 None을 돌려준다.
+
+    로그인을 먼저 본다. 로그인 화면에도 이름·전화번호로 읽힐 칸이 있을 수 있어
+    폼 스킬이 먼저 잡으면 엉뚱한 값이 들어간다.
+    """
+    if is_login_screen(observation) or submitted(history):
+        return login(observation, history, field_hint, auto_submit)
+    return fill_form(observation, history, field_hint)
