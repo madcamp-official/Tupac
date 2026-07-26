@@ -64,6 +64,41 @@ def mask(text):
     return text
 
 
+# 화면에 남의 이야기가 그대로 떠 있는 앱들. 대화 내용·메일 본문·사진 설명은
+# 에이전트가 길을 찾는 데 필요 없다. 어느 항목을 누를지만 알면 된다.
+CONTENT_PACKAGES = (
+    "kakao.talk", "line", "telegram", "whatsapp", "messenger", "facebook",
+    "instagram", "discord", "slack", "mms", "messaging", "android.email",
+    "gm", "mail", "gallery", "photos", "band", "everytime",
+)
+
+# 이 길이를 넘는 글은 항목 이름이 아니라 내용으로 본다. 설정 항목이나 사람
+# 이름은 짧고("연결", "김철수"), 대화 미리보기나 메일 제목은 길다.
+CONTENT_LENGTH = 14
+
+
+def redact(label, package):
+    """클라우드로 내보낼 라벨을 다듬는다.
+
+    두 단계다. 먼저 형식이 뚜렷한 식별번호를 자리표시자로 바꾸고, 그다음
+    메신저·메일 같은 앱에서는 긴 글을 내용으로 보고 통째로 가린다.
+
+    길이로 가르는 건 거칠지만, 접근성 트리에는 "이건 대화 미리보기"라는 표시가
+    없다. 대신 잃는 게 적다. 에이전트가 할 일은 "몇 번째 채팅방을 누를지"이지
+    "무슨 대화인지"가 아니다.
+
+    사람 이름은 남는다. 짧아서 걸러지지 않고, 누를 항목을 가리키려면 필요하다.
+    이름도 개인정보라는 점에서 이 방식은 완전하지 않다.
+    """
+    label = mask(label)
+    if len(label) <= CONTENT_LENGTH:
+        return label
+    lowered = (package or "").lower()
+    if any(marker in lowered for marker in CONTENT_PACKAGES):
+        return f"<내용 {len(label)}자>"
+    return label
+
+
 def sensitive_reason(observation):
     """민감 화면이면 이유를, 아니면 None.
 

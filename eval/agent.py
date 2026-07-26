@@ -28,6 +28,7 @@
   --steps N      최대 스텝 수 (기본 12)
   --all-nodes    라벨 없는 노드까지 모델에게 보여준다 (기본은 라벨 있는 것만)
   --dry          모델 판단만 보고 실제로 폰을 조작하지는 않는다
+  --no-submit    로그인 스킬이 값만 채우고 제출 버튼은 누르지 않는다
 """
 import json
 import os
@@ -143,7 +144,7 @@ def render_screen(observation, all_nodes, redact=False):
     for node in observation["nodes"]:
         label = (node.get("text") or node.get("content_description") or "").replace("\n", " ")
         if redact:
-            label = privacy.mask(label)
+            label = privacy.redact(label, observation.get("package_name"))
         if not label and not all_nodes:
             continue                      # 라벨 없는 노드는 모델이 고를 근거가 없다
         if node["editable"]:
@@ -234,7 +235,7 @@ def execute(action, observation, dry):
     return f"알 수 없는 행동: {kind}"
 
 
-def run(goal, cloud, fallback, max_steps, all_nodes, dry):
+def run(goal, cloud, fallback, max_steps, all_nodes, dry, auto_submit=True):
     """cloud로 진행하다가, 민감한 화면을 만나면 fallback(기기 안 모델)으로 넘긴다."""
     note = "" if cloud is fallback else f", 민감 화면은 {fallback.name}"
     print(f"목표: {goal}  (brain: {cloud.name}{note})\n{'=' * 60}")
@@ -294,7 +295,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry):
         # 정해진 절차로 끝나는 일은 모델에게 묻지 않는다. 로그인처럼 개인정보를
         # 다루는 화면이 그렇다. 스킬이 맡지 않겠다고 할 때만 모델을 부른다.
         started = time.time()
-        action = skills.next_action(observation, history, fields)
+        action = skills.next_action(observation, history, fields, auto_submit)
         raw = "(skill)"
         if action is None:
             try:
@@ -339,8 +340,8 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry):
 
 def parse_argv(argv):
     """--flag / --flag VALUE 와 목표 문장을 갈라낸다."""
-    options = {"brain": "local", "fallback": "local",
-               "steps": 12, "all_nodes": False, "dry": False}
+    options = {"brain": "local", "fallback": "local", "steps": 12,
+               "all_nodes": False, "dry": False, "no_submit": False}
     words = []
     index = 0
     while index < len(argv):
@@ -359,6 +360,9 @@ def parse_argv(argv):
             index += 1
         elif token == "--dry":
             options["dry"] = True
+            index += 1
+        elif token == "--no-submit":
+            options["no_submit"] = True
             index += 1
         elif token.startswith("--"):
             sys.exit(f"알 수 없는 옵션: {token}\n{__doc__}")
@@ -381,5 +385,5 @@ if __name__ == "__main__":
         fallback = brains.make_brain(parsed["fallback"]) if selected.online else selected
     except brains.BrainError as error:
         sys.exit(str(error))
-    run(parsed["goal"], selected, fallback,
-        parsed["steps"], parsed["all_nodes"], parsed["dry"])
+    run(parsed["goal"], selected, fallback, parsed["steps"],
+        parsed["all_nodes"], parsed["dry"], not parsed["no_submit"])

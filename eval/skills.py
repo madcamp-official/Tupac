@@ -81,7 +81,7 @@ def filled_so_far(history):
             if match}
 
 
-def login_fields(observation):
+def login_fields(observation, entries):
     """로그인 화면의 입력창을 (노드, 필드) 순서대로.
 
     라벨로 맞추지 않고 password 플래그를 먼저 본다. 로그인 화면에서 비밀번호가
@@ -91,26 +91,66 @@ def login_fields(observation):
 
     화면에 나온 순서 그대로 돌려준다. 대개 아이디가 위, 비밀번호가 아래다.
 
-    라벨 매칭은 쓰지 않는다. 카카오톡 라벨은 email로도 phone으로도 읽히지만
-    둘 다 답이 아니다. 로그인 화면의 입력창은 둘 중 하나뿐이라고 보는 게 맞다.
-    (칸이 여럿인 회원가입 폼은 이 스킬이 다룰 화면이 아니다. 그건 따로 만든다.)
+    다만 이 단순화는 "아이디 한 칸 + 비밀번호 한 칸"일 때만 옳다. 인증번호 화면
+    처럼 칸이 하나뿐인데 비밀번호가 아니면, 그 칸을 아이디로 보고 채워버린다
+    (실측: 2단계 인증 화면에 아이디를 넣으려 했다). 그래서 칸 구성이 로그인
+    폼과 정확히 맞을 때만 플래그로 가르고, 아니면 라벨을 보고, 그래도 모르면
+    맡지 않는다(None). 모르면 모델에게 넘기는 편이 잘못 채우는 것보다 낫다.
     """
-    return [
-        (node, "password" if node.get("password") else "username")
-        for node in observation.get("nodes", [])
-        if node.get("editable")
-    ]
+    editables = [node for node in observation.get("nodes", []) if node.get("editable")]
+    passwords = [node for node in editables if node.get("password")]
+    others = [node for node in editables if not node.get("password")]
+
+    if len(passwords) == 1 and len(others) == 1:
+        return [(node, "password" if node.get("password") else "username")
+                for node in editables]
+
+    # 칸 구성이 다르면 라벨에 기대는 수밖에 없다. 확실한 것만 남긴다.
+    found = []
+    for node in editables:
+        field = "password" if node.get("password") else field_for(label_of(node), entries)
+        if field is not None:
+            found.append((node, field))
+    return found
 
 
-def login(observation, history, field_hint):
+# 제출 버튼으로 볼 말. 로그인 화면에는 "비밀번호 찾기", "회원가입"처럼 눌러선
+# 안 되는 버튼이 함께 있어서, 걸러낼 말도 같이 둔다.
+SUBMIT_WORDS = ("로그인", "signin", "login", "확인", "다음", "계속")
+NOT_SUBMIT_WORDS = ("찾기", "가입", "취소", "다른", "간편", "재설정", "도움", "문의")
+
+
+def submit_button(observation):
+    """로그인 제출 버튼 노드. 확실하지 않으면 None.
+
+    후보가 여럿이면 고르지 않는다. 로그인 화면에서 엉뚱한 버튼을 누르는 건
+    되돌리기 어렵고(회원가입 흐름으로 빠지거나 계정이 만들어질 수도 있다),
+    사람이 한 번 누르는 비용보다 크다.
+    """
+    found = []
+    for node in observation.get("nodes", []):
+        if node.get("editable") or not node.get("clickable"):
+            continue
+        label = squash(label_of(node))
+        if not label or len(label) > 12:
+            continue
+        if any(word in label for word in NOT_SUBMIT_WORDS):
+            continue
+        if any(word in label for word in SUBMIT_WORDS):
+            found.append(node)
+    return found[0] if len(found) == 1 else None
+
+
+def login(observation, history, field_hint, auto_submit=True):
     """로그인 화면에서 할 다음 행동 하나. 맡을 게 없으면 None.
 
     한 스텝에 하나씩 돌려주는 건 에이전트 루프가 그렇게 돌기 때문이다. 순서는
     칸 누르기 → 채우기다. 포커스가 없으면 화면의 첫 입력창에 들어가므로 반드시
     누르고 채워야 한다.
 
-    제출은 하지 않는다. 자격증명을 보내는 건 되돌릴 수 없고, 잘못된 화면이면
-    그대로 유출이다. 마지막 한 번은 사람이 누르는 게 맞다.
+    제출까지 한다(auto_submit=False면 채우고 멈춘다). 다만 조건이 붙는다.
+    비밀번호를 이번 실행에서 스킬이 직접 채웠고, 제출 버튼이 하나로 분명할
+    때만이다. 화면에 원래 값이 있었거나 버튼 후보가 여럿이면 사람에게 넘긴다.
     """
     if not is_login_screen(observation):
         return None
@@ -122,7 +162,7 @@ def login(observation, history, field_hint):
     done = filled_so_far(history)
     last = history[-1] if history else ""
 
-    for node, field in login_fields(observation):
+    for node, field in login_fields(observation, entries):
         if field in done:
             continue
 
@@ -133,13 +173,23 @@ def login(observation, history, field_hint):
         return {"action": "tap", "node_id": node["id"],
                 "reason": f"{field} 칸을 누릅니다"}
 
-    if done:
-        return {"action": "done",
-                "reason": f"{', '.join(sorted(done))}을(를) 채웠습니다. "
-                          f"로그인 버튼은 직접 눌러주세요"}
-    return None
+    if not done:
+        return None
+
+    # 제출은 스킬이 직접 채운 경우에만 누른다. 화면에 이미 값이 있었다거나
+    # 사람이 넣은 값이면 무엇이 들어있는지 알 수 없고, 그걸 대신 보내는 건
+    # 다른 문제다. 채운 게 우리라는 걸 아는 지금만 안전하다.
+    filled = ", ".join(sorted(done))
+    if auto_submit and "password" in done:
+        button = submit_button(observation)
+        if button and f"tap {button['id']} →" not in " ".join(history[-2:]):
+            return {"action": "tap", "node_id": button["id"],
+                    "reason": f"{filled}을(를) 채웠으니 로그인을 누릅니다"}
+    return {"action": "done",
+            "reason": f"{filled}을(를) 채웠습니다."
+                      + ("" if auto_submit else " 로그인 버튼은 직접 눌러주세요")}
 
 
-def next_action(observation, history, field_hint):
+def next_action(observation, history, field_hint, auto_submit=True):
     """스킬이 맡을 수 있으면 행동을, 아니면 None을 돌려준다."""
-    return login(observation, history, field_hint)
+    return login(observation, history, field_hint, auto_submit)
