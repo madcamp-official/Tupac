@@ -141,6 +141,48 @@ def submit_button(observation):
     return found[0] if len(found) == 1 else None
 
 
+# 제출 뒤 결과 화면이 뜰 때까지 기다려줄 횟수. 이보다 오래 걸리면 뭔가 잘못된
+# 것이니 사람에게 넘긴다.
+MAX_WAITS = 3
+
+# 이보다 항목이 적으면 아직 자리를 잡지 않은 화면으로 본다. 로딩 중이거나
+# 대화상자만 떠 있는 상태다. 실제 앱 화면은 항목이 이보다 훨씬 많다.
+MIN_SETTLED_NODES = 3
+
+
+def submitted(history):
+    return any("submit" in line for line in history)
+
+
+def after_submit(observation, history):
+    """제출을 누른 뒤에 할 일.
+
+    스킬이 여기까지 맡는 이유는 실측 때문이다. 제출 직후 전환 화면(노드 두어 개)은
+    로그인 화면이 아니라서 스킬이 빠졌고, 그 틈에 1.2B가 이유도 없이 아무 노드나
+    눌렀다. 가장 민감한 자리 바로 다음이 가장 약한 판단에 맡겨진 셈이었다.
+
+    "로그인 화면을 벗어났으면 성공"으로는 부족하다. 제출 직후에는 로딩 화면이나
+    오류 대화상자가 뜨는데 그것도 로그인 화면이 아니다(실측: 항목 두 개짜리
+    실패 안내를 성공으로 봤다). 화면이 자리를 잡았는지까지 확인한다.
+    """
+    nodes = observation.get("meaningful_node_count") or len(observation.get("nodes", []))
+    settled = nodes >= MIN_SETTLED_NODES
+
+    if not is_login_screen(observation) and settled:
+        return {"action": "done",
+                "reason": "로그인 화면을 벗어나 다른 화면이 떴습니다. 로그인된 것으로 봅니다"}
+
+    waits = sum(1 for line in history if "wait" in line)
+    if waits < MAX_WAITS:
+        return {"action": "wait", "reason": "로그인 결과를 기다립니다"}
+
+    # 값을 다시 채워 재시도하지는 않는다. 틀린 값으로 반복하면 계정이 잠길 수 있다.
+    return {"action": "done",
+            "reason": ("아직 로그인 화면입니다. 값이 맞는지, 추가 인증이 필요한지 확인하세요"
+                       if is_login_screen(observation)
+                       else "제출했지만 결과를 확인하지 못했습니다. 화면을 직접 확인하세요")}
+
+
 def login(observation, history, field_hint, auto_submit=True):
     """로그인 화면에서 할 다음 행동 하나. 맡을 게 없으면 None.
 
@@ -152,6 +194,10 @@ def login(observation, history, field_hint, auto_submit=True):
     비밀번호를 이번 실행에서 스킬이 직접 채웠고, 제출 버튼이 하나로 분명할
     때만이다. 화면에 원래 값이 있었거나 버튼 후보가 여럿이면 사람에게 넘긴다.
     """
+    # 제출한 뒤에는 화면이 로그인 폼이 아닐 수 있으므로 이 검사보다 먼저 본다.
+    if submitted(history):
+        return after_submit(observation, history)
+
     if not is_login_screen(observation):
         return None
 
@@ -183,7 +229,9 @@ def login(observation, history, field_hint, auto_submit=True):
     if auto_submit and "password" in done:
         button = submit_button(observation)
         if button and f"tap {button['id']} →" not in " ".join(history[-2:]):
-            return {"action": "tap", "node_id": button["id"],
+            # mark는 이력에 남는다. 다음 스텝에서 "이미 제출했다"를 알아야
+            # 값을 다시 채우지 않고 결과를 기다릴 수 있다.
+            return {"action": "tap", "node_id": button["id"], "mark": "submit",
                     "reason": f"{filled}을(를) 채웠으니 로그인을 누릅니다"}
     return {"action": "done",
             "reason": f"{filled}을(를) 채웠습니다."

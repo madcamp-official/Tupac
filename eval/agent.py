@@ -46,6 +46,7 @@ MCP_URL = f"http://127.0.0.1:{MCP_PORT}/mcp"
 
 MAX_PROMPT_NODES = 45
 STALL_LIMIT = 3          # 화면이 이만큼 연속으로 안 바뀌면 중단한다
+WAIT_SECONDS = 2.0       # wait 행동이 쉬는 시간
 
 
 def describe(observation):
@@ -193,6 +194,11 @@ def execute(action, observation, dry):
         result = mcp("device_type_text", {"text": action.get("text", "")})
         return "성공: 입력함" if result.get("success") else f"실패: {result.get('error')}"
 
+    if kind == "wait":
+        # 화면 전환이나 서버 응답을 기다리는 동안 아무것도 하지 않는다.
+        time.sleep(WAIT_SECONDS)
+        return "성공: 잠시 기다림"
+
     if kind == "back":
         result = mcp("device_back", {})
         return "성공: 뒤로감" if result.get("success") else f"실패: {result.get('error')}"
@@ -244,6 +250,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, auto_submit=True):
     history = []
     previous_id = None
     pending = None          # 직전 행동의 이력. 화면이 바뀌었는지는 아직 모른다.
+    pending_kind = None
     stalled = 0             # 화면이 연속으로 안 바뀐 횟수
     for step in range(1, max_steps + 1):
         observation = mcp("device_observe", {"max_nodes": 500})
@@ -262,8 +269,11 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, auto_submit=True):
         if pending is not None:
             changed = observation["snapshot_id"] != previous_id
             history.append(f"{pending} ({'화면 바뀜' if changed else '화면 그대로'})")
-            stalled = 0 if changed else stalled + 1
-            if not changed:
+            # 기다리는 중에 화면이 그대로인 건 정체가 아니라 의도한 것이다.
+            waiting = pending_kind == "wait"
+            stalled = 0 if (changed or waiting) else stalled + 1
+            # 기다리는 중에 화면이 그대로인 건 알릴 일이 아니다. 의도한 것이다.
+            if not changed and not waiting:
                 print(f"     ↳ 화면이 바뀌지 않았습니다 ({stalled}회 연속)")
             pending = None
         previous_id = observation["snapshot_id"]
@@ -313,7 +323,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, auto_submit=True):
         # 알 수가 없다(실측: task만 찍히고 web_search인지 timer인지 안 보였다).
         detail = " ".join(str(action.get(key)) for key in
                           ("node_id", "screen", "task", "value", "app", "field",
-                           "direction", "text")
+                           "direction", "text", "mark")
                           if action.get(key))
         print(f"[{step}] {action['action']} {detail}"
               f"  ({observation['meaningful_node_count']}노드, {elapsed:.1f}s)")
@@ -321,13 +331,15 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, auto_submit=True):
             print(f"     이유: {action['reason'][:100]}")
 
         if action["action"] == "done":
-            print(f"{'=' * 60}\n모델이 목표 달성을 선언했습니다. 화면을 확인하세요.")
+            who = "스킬이" if raw == "(skill)" else "모델이"
+            print(f"{'=' * 60}\n{who} 마무리했습니다. 화면을 확인하세요.")
             return
 
         outcome = execute(action, observation, dry)
         print(f"     결과: {outcome}")
         # 아직 history에 넣지 않는다. 다음 observe로 화면 변화를 확인한 뒤 붙인다.
         pending = f"step{step}: {action['action']} {detail} → {outcome}"
+        pending_kind = action["action"]
         time.sleep(1.2)          # 화면 전환이 끝날 때까지 잠깐 기다린다
 
     # done을 못 뽑았다고 실패는 아니다. 목표를 이미 이뤘는데도 완료 선언만
