@@ -5,6 +5,7 @@ import android.os.Looper
 import com.example.mobileguiagent.accessibility.AgentAccessibilityService
 import com.example.mobileguiagent.device.DeviceToolRegistry
 import com.example.mobileguiagent.model.NodeActionResult
+import com.example.mobileguiagent.secret.SecretVault
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiSnapshot
 import com.example.mobileguiagent.repository.AgentRepository
@@ -293,6 +294,45 @@ class PocketMcpHttpServer(
                 ),
         )
     }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_fill_field")
+                .put(
+                    "description",
+                    "Fills one input from the newest device_observe snapshot with a value " +
+                        "stored on the device. Takes the field name only; the value never " +
+                        "leaves the phone and is not returned.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put(
+                                "snapshot_id",
+                                JSONObject()
+                                    .put("type", "string")
+                                    .put("description", "Exact snapshot_id returned by device_observe."),
+                            )
+                            .put(
+                                "node_id",
+                                JSONObject()
+                                    .put("type", "string")
+                                    .put("description", "Input node id from the same snapshot."),
+                            )
+                            .put(
+                                "field",
+                                JSONObject()
+                                    .put("type", "string")
+                                    .put("enum", JSONArray(SecretVault.FIELDS.keys.toList()))
+                                    .put("description", fieldHints()),
+                            ),
+                    ).put(
+                        "required",
+                        JSONArray().put("snapshot_id").put("node_id").put("field"),
+                    ),
+                ),
+        )
+    }.also { result ->
         // 어댑터가 담당하는 device tool(screenshot/back/scroll/type_text…)을 한 번에 노출.
         val tools = result.getJSONArray("tools")
         mcpDeviceToolAdapter.definitions().forEach { definition -> tools.put(definition) }
@@ -328,6 +368,7 @@ class PocketMcpHttpServer(
             }
             "device_open_settings" -> openSettings()
             "device_click_node" -> clickNode(arguments)
+            "device_fill_field" -> fillField(arguments)
             else -> if (mcpDeviceToolAdapter.handles(name)) {
                 mcpDeviceToolAdapter.call(name, arguments)
             } else {
@@ -368,6 +409,86 @@ class PocketMcpHttpServer(
                 .put("before_package", before?.packageName ?: JSONObject.NULL)
                 .put("after_package", after?.packageName ?: JSONObject.NULL)
                 .put("after_snapshot_id", after?.fingerprint?.hash ?: JSONObject.NULL),
+        )
+    }
+
+    private fun fieldHints(): String =
+        SecretVault.FIELDS.entries.joinToString(", ") { (key, hint) -> "$key($hint)" }
+
+    /**
+     * 금고 값으로 입력창 하나를 채운다.
+     *
+     * device_click_node와 같은 방식으로 스냅샷의 노드를 지목받는다. 포커스에
+     * 기대면 크롬 웹 폼처럼 포커스가 안 잡히는 화면에서 모든 값이 첫 칸에
+     * 덮어써진다(실측). 어느 칸에 넣는지는 분명해야 한다 — 개인정보다.
+     *
+     * 응답에 값을 싣지 않는다. 무엇을 넣었는지만 알려준다.
+     */
+    private fun fillField(arguments: JSONObject): JSONObject {
+        val field = arguments.optString("field")
+        if (!SecretVault.FIELDS.containsKey(field)) {
+            return toolError(
+                "UNKNOWN_FIELD",
+                "모르는 필드입니다: $field. 가능한 값: ${SecretVault.FIELDS.keys.joinToString()}",
+            )
+        }
+
+        val snapshotId = arguments.optString("snapshot_id")
+        val nodeId = arguments.optString("node_id")
+        val observed = lastSnapshot.get()
+            ?: return toolError("NO_OBSERVATION", "device_observe를 먼저 호출하세요.")
+        if (snapshotId.isBlank() || snapshotId != observed.fingerprint.hash) {
+            return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
+        }
+        val target = observed.nodes.firstOrNull { it.id == nodeId }
+            ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
+        if (!target.editable) {
+            return toolError("NOT_EDITABLE", "입력창이 아닌 노드입니다: $nodeId")
+        }
+
+        val service = AgentAccessibilityService.activeService
+            ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
+
+        // 계정 필드는 지금 화면의 앱 것만 쓴다. 부르는 쪽이 고르게 하면 한 앱의
+        // 자격증명이 다른 앱 화면에 들어갈 수 있다.
+        val result = AtomicBoolean(false)
+        val missing = AtomicReference<String?>(null)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            val currentApp = service.rootInActiveWindow?.packageName?.toString()
+            val value = when {
+                !SecretVault.isAccountField(field) -> SecretVault.reveal(service, field)
+                currentApp == null -> null
+                else -> SecretVault.reveal(service, field, currentApp)
+            }
+            if (value == null) {
+                missing.set(
+                    if (SecretVault.isAccountField(field)) {
+                        "이 앱($currentApp)의 $field 이(가) 등록돼 있지 않습니다. " +
+                            "앱의 \"내 정보\" 화면에서 이 앱 계정을 먼저 등록하세요."
+                    } else {
+                        "$field 값이 저장돼 있지 않습니다. 앱 화면에서 먼저 등록하세요."
+                    },
+                )
+            } else {
+                result.set(service.setTextOnSnapshotNode(target, observed.packageName, value))
+            }
+            latch.countDown()
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+
+        missing.get()?.let { message -> return toolError("FIELD_NOT_SET", message) }
+        if (!result.get()) {
+            return toolError("FILL_FAILED", "$nodeId 에 값을 넣지 못했습니다.")
+        }
+
+        captureSnapshotOnMainThread()?.let(lastSnapshot::set)
+        return toolResult(
+            JSONObject()
+                .put("success", true)
+                .put("field", field)
+                .put("node_id", nodeId)
+                .put("message", "$field 값을 입력했습니다."),
         )
     }
 

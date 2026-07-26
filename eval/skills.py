@@ -80,11 +80,29 @@ def is_login_screen(observation):
 
 
 def filled_so_far(history):
-    """이번 실행에서 이미 채운 필드. 이력 문구에서 읽는다."""
+    """이번 실행에서 이미 채운 필드. 이력 문구에서 읽는다.
+
+    이력 한 줄은 "step1: fill node_16 name → 성공: ..." 꼴이다. 필드 이름은
+    화살표 바로 앞이다. 노드를 지목해 채우도록 바꾸면서 node_id가 앞에 붙었는데
+    정규식을 안 고쳐서, 채운 필드를 하나도 기억하지 못했다(실측: 네 칸을 채우고도
+    done이 비어 스킬이 폼이 아니라고 판단해 손을 놨다).
+    """
     return {match.group(1)
             for line in history
-            for match in [re.search(r"fill (\w+) →.*성공", line)]
+            for match in [re.search(r"fill \S+ (\w+) →.*성공", line)]
             if match}
+
+
+def fill_action(node, field):
+    """그 칸을 지목해 금고 값으로 채우는 행동.
+
+    예전에는 칸을 먼저 누르고(포커스) 그다음 채웠다. 그런데 폰 쪽이 포커스를
+    보고 넣는 방식이라, 크롬 웹 폼처럼 눌러도 접근성 포커스가 안 잡히는 화면에서
+    세 값이 모두 첫 칸에 덮어써졌다. 이제 노드를 지정해 그 칸에 바로 넣는다.
+    누르는 단계가 빠져 스텝도 절반이 된다.
+    """
+    return {"action": "fill", "node_id": node["id"], "field": field,
+            "reason": f"{field} 칸에 금고 값을 넣습니다 (값은 폰 안에서 처리)"}
 
 
 def login_fields(observation, entries):
@@ -212,18 +230,11 @@ def login(observation, history, field_hint, auto_submit=True):
         return None
 
     done = filled_so_far(history)
-    last = history[-1] if history else ""
 
     for node, field in login_fields(observation, entries):
         if field in done:
             continue
-
-        # 방금 이 칸을 눌렀으면 이제 채운다. 아니면 먼저 누른다.
-        if f"tap {node['id']} →" in last and "성공" in last:
-            return {"action": "fill", "field": field,
-                    "reason": f"{field} 칸에 금고 값을 넣습니다 (값은 폰 안에서 처리)"}
-        return {"action": "tap", "node_id": node["id"],
-                "reason": f"{field} 칸을 누릅니다"}
+        return fill_action(node, field)
 
     if not done:
         return None
@@ -293,16 +304,10 @@ def fill_form(observation, history, field_hint):
     if not done and len(targets) < MIN_FORM_FIELDS:
         return None
 
-    last = history[-1] if history else ""
-
     for node, field in targets:
         if field in done:
             continue
-        if f"tap {node['id']} →" in last and "성공" in last:
-            return {"action": "fill", "field": field,
-                    "reason": f"{field} 칸에 금고 값을 넣습니다 (값은 폰 안에서 처리)"}
-        return {"action": "tap", "node_id": node["id"],
-                "reason": f"{field} 칸을 누릅니다"}
+        return fill_action(node, field)
 
     if not done:
         return None

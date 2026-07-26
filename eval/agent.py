@@ -230,7 +230,11 @@ def execute(action, observation, dry):
         return f"실패: {result.get('message') or result.get('error')}"
 
     if kind == "fill":
-        result = mcp("device_fill_field", {"field": action.get("field", "")})
+        result = mcp("device_fill_field", {
+            "snapshot_id": observation["snapshot_id"],
+            "node_id": action.get("node_id", ""),
+            "field": action.get("field", ""),
+        })
         # 성공 메시지에도 값은 없다. 폰이 "password 값을 입력했습니다"까지만 준다.
         return (f"성공: {result.get('message')}" if result.get("success")
                 else f"실패: {result.get('message') or result.get('error')}")

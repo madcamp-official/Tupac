@@ -3,7 +3,6 @@ package com.example.mobileguiagent.mcp
 import android.util.Base64
 import com.example.mobileguiagent.device.BackDeviceTool
 import com.example.mobileguiagent.device.CaptureScreenDeviceTool
-import com.example.mobileguiagent.device.FillFieldDeviceTool
 import com.example.mobileguiagent.device.LaunchAppDeviceTool
 import com.example.mobileguiagent.device.ListFieldsDeviceTool
 import com.example.mobileguiagent.device.ListAppsDeviceTool
@@ -32,7 +31,6 @@ class McpDeviceToolAdapter(
         EXTERNAL_START_TASK_NAME to SystemTaskDeviceTool.NAME,
         EXTERNAL_LAUNCH_APP_NAME to LaunchAppDeviceTool.NAME,
         EXTERNAL_LIST_APPS_NAME to ListAppsDeviceTool.NAME,
-        EXTERNAL_FILL_FIELD_NAME to FillFieldDeviceTool.NAME,
         EXTERNAL_LIST_FIELDS_NAME to ListFieldsDeviceTool.NAME,
     )
 
@@ -145,7 +143,6 @@ class McpDeviceToolAdapter(
         const val EXTERNAL_START_TASK_NAME = "device_start_task"
         const val EXTERNAL_LAUNCH_APP_NAME = "device_launch_app"
         const val EXTERNAL_LIST_APPS_NAME = "device_list_apps"
-        const val EXTERNAL_FILL_FIELD_NAME = "device_fill_field"
         const val EXTERNAL_LIST_FIELDS_NAME = "device_list_fields"
     }
 }

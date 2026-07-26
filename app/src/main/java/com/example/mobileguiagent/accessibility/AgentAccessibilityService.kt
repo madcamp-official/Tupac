@@ -271,6 +271,47 @@ class AgentAccessibilityService : AccessibilityService() {
      * label is required and the original view ID/class/bounds are used only
      * to rank otherwise identical matches.
      */
+    /**
+     * 스냅샷에서 고른 그 입력창에 글자를 넣는다.
+     *
+     * setTextOnFirstEditable로는 안 된다. 그건 포커스를 보고, 포커스가 없으면
+     * 화면의 첫 입력창으로 물러난다. 크롬의 웹 폼은 칸을 눌러도 접근성 포커스가
+     * 잡히지 않아서, 세 번 채운 값이 모두 첫 칸에 덮어써졌다(실측: 받는사람 칸에
+     * 우편번호가 들어가고 나머지는 비어 있었다).
+     *
+     * 라벨로 찾을 수도 없다. 빈 입력창은 라벨이 hint에만 있거나 아예 없다.
+     * 남는 단서는 위치다. 관찰 직후에 부르므로 화면이 그대로라는 건 이미
+     * 확인돼 있고, 그러면 bounds가 그 칸을 가리키는 가장 확실한 표시다.
+     */
+    fun setTextOnSnapshotNode(
+        target: UiNode,
+        expectedPackage: String,
+        text: String,
+    ): Boolean {
+        val root = rootInActiveWindow ?: return false
+        if (root.packageName?.toString() != expectedPackage) return false
+
+        val nodes = mutableListOf<IndexedNativeNode>()
+        collectIndexedNativeNodes(root, nodes)
+        val match = nodes
+            .asSequence()
+            .filter { item -> item.node.isEditable && item.node.isEnabled }
+            .maxByOrNull { item -> boundsSimilarityScore(item.node, target.bounds) }
+            ?: return false
+
+        val bounds = Rect()
+        match.node.getBoundsInScreen(bounds)
+        if (bounds != target.bounds) return false      // 같은 자리가 아니면 넣지 않는다
+
+        val arguments = Bundle().apply {
+            putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                text,
+            )
+        }
+        return match.node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+    }
+
     fun clickSnapshotNode(
         target: UiNode,
         expectedPackage: String,

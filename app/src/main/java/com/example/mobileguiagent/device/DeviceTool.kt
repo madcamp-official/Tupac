@@ -47,7 +47,6 @@ class DeviceToolRegistry(
         SystemTaskDeviceTool,
         LaunchAppDeviceTool,
         ListAppsDeviceTool,
-        FillFieldDeviceTool,
         ListFieldsDeviceTool,
     ),
 ) {
