@@ -750,6 +750,7 @@ For goals such as going Home, the launcher foreground package proves completion.
                     is DeviceToolResult.Error -> "error:${result.code}"
                     is DeviceToolResult.UiObservation -> "observed"
                     is DeviceToolResult.Screenshot -> "captured"
+                    is DeviceToolResult.Success -> "dispatched; verify current image"
                 }
                 "- ${record.call.actionHint()}: $outcome"
             }

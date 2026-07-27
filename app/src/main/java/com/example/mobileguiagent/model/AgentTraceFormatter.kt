@@ -18,6 +18,9 @@ internal object AgentTraceFormatter {
         is DeviceToolResult.Screenshot ->
             "스크린샷 ${result.width}×${result.height}"
 
+        is DeviceToolResult.Success ->
+            result.message ?: "성공"
+
         is DeviceToolResult.UiObservation ->
             "${result.snapshot.packageName} · 노드 ${result.snapshot.nodes.size}개"
     }

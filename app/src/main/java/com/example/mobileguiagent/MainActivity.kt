@@ -89,7 +89,18 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MobileGUIAgentTheme {
+                // 개인정보 등록 화면은 별도로 띄운다. 값을 넣는 통로를 앱 안에
+                // 하나로 두기 위해서다(MCP로는 쓰기를 열지 않는다).
+                var showVault by androidx.compose.runtime.remember {
+                    androidx.compose.runtime.mutableStateOf(false)
+                }
+                if (showVault) {
+                    com.example.mobileguiagent.secret.SecretVaultScreen(
+                        onBack = { showVault = false },
+                    )
+                } else {
                 LocalModelChatScreen(
+                    onOpenVault = { showVault = true },
                     onSend = { message ->
                         LocalChatRepository.send(
                             context = applicationContext,
@@ -110,6 +121,7 @@ class MainActivity : ComponentActivity() {
                         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     },
                 )
+                }
             }
         }
     }
@@ -123,6 +135,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 private fun LocalModelChatScreen(
+    onOpenVault: () -> Unit,
     onSend: (String) -> Unit,
     onClear: () -> Unit,
     onStop: () -> Unit,
@@ -302,6 +315,9 @@ private fun LocalModelChatScreen(
                     }
                     TextButton(onClick = { showCredentialVault = true }) {
                         Text("보안")
+                    }
+                    TextButton(onClick = onOpenVault) {
+                        Text("내 정보")
                     }
                     TextButton(
                         onClick = { LocalChatRepository.archiveCurrent(context) },

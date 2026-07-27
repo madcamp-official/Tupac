@@ -774,6 +774,8 @@ class GeminiAgentController(
         is DeviceToolResult.Error ->
             "${call.name}(${call.arguments}) -> error=${result.code}"
         is DeviceToolResult.Screenshot -> "screenshot ${result.width}x${result.height}"
+        is DeviceToolResult.Success ->
+            "${call.name}(${call.arguments}) -> success=true"
         is DeviceToolResult.UiObservation ->
             "observe ${result.snapshot.packageName} nodes=${result.snapshot.nodes.size}"
     }

@@ -301,6 +301,11 @@ class LocalDeviceToolAdapter(
             .put("success", result.success)
             .put("message", result.message)
 
+        is DeviceToolResult.Success -> JSONObject()
+            .put("type", "action")
+            .put("success", true)
+            .put("message", result.message ?: "Action dispatched.")
+
         is DeviceToolResult.Error -> JSONObject()
             .put("type", "error")
             .put("code", result.code)

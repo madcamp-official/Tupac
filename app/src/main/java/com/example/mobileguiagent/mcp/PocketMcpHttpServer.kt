@@ -6,6 +6,7 @@ import com.example.mobileguiagent.accessibility.AgentAccessibilityService
 import com.example.mobileguiagent.device.DeviceToolRegistry
 import com.example.mobileguiagent.model.NodeActionResult
 import com.example.mobileguiagent.model.LocalChatRepository
+import com.example.mobileguiagent.secret.SecretVault
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiSnapshot
 import com.example.mobileguiagent.model.isMeaningfulForAgent
@@ -296,6 +297,142 @@ class PocketMcpHttpServer(
                     ),
                 ),
         )
+    }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_fill_field")
+                .put(
+                    "description",
+                    "Fills one input from the newest device_observe snapshot with a value " +
+                        "stored on the device. Takes the field name only; the value never " +
+                        "leaves the phone and is not returned.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put(
+                                "snapshot_id",
+                                JSONObject()
+                                    .put("type", "string")
+                                    .put("description", "Exact snapshot_id returned by device_observe."),
+                            )
+                            .put(
+                                "node_id",
+                                JSONObject()
+                                    .put("type", "string")
+                                    .put("description", "Input node id from the same snapshot."),
+                            )
+                            .put(
+                                "field",
+                                JSONObject()
+                                    .put("type", "string")
+                                    .put("enum", JSONArray(SecretVault.FIELDS.keys.toList()))
+                                    .put("description", fieldHints()),
+                            ),
+                    ).put(
+                        "required",
+                        JSONArray().put("snapshot_id").put("node_id").put("field"),
+                    ),
+                ),
+        )
+    }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_get_field")
+                .put(
+                    "description",
+                    "Returns a personal-data value stored on the device so the caller can " +
+                        "type it. Account fields are bound to the app currently on screen.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject().put(
+                            "field",
+                            JSONObject()
+                                .put("type", "string")
+                                .put("enum", JSONArray(SecretVault.FIELDS.keys.toList()))
+                                .put("description", fieldHints()),
+                        ),
+                    ).put("required", JSONArray().put("field")),
+                ),
+        )
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_type_node")
+                .put(
+                    "description",
+                    "Types text into one input from the newest device_observe snapshot. " +
+                        "Unlike device_type_text this does not rely on focus.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put(
+                                "snapshot_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Exact snapshot_id from device_observe."),
+                            )
+                            .put(
+                                "node_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Input node id from the same snapshot."),
+                            )
+                            .put(
+                                "text",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Text to put in that input."),
+                            ),
+                    ).put(
+                        "required",
+                        JSONArray().put("snapshot_id").put("node_id").put("text"),
+                    ),
+                ),
+        )
+    }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_set_progress")
+                .put(
+                    "description",
+                    "Moves a slider (brightness, volume, seek bar) to an exact value. " +
+                        "Only nodes that device_observe reported with a \"range\" can be set; " +
+                        "tapping such a node cannot choose a value.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put(
+                                "snapshot_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Exact snapshot_id from device_observe."),
+                            )
+                            .put(
+                                "node_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Slider node id from the same snapshot."),
+                            )
+                            .put(
+                                "value",
+                                JSONObject().put("type", "number")
+                                    .put(
+                                        "description",
+                                        "Target value inside the node's own min..max range.",
+                                    ),
+                            ),
+                    ).put(
+                        "required",
+                        JSONArray().put("snapshot_id").put("node_id").put("value"),
+                    ),
+                ),
+        )
+    }.also { result ->
+        // 어댑터가 담당하는 device tool(screenshot/back/scroll/type_text…)을 한 번에 노출.
+        val tools = result.getJSONArray("tools")
+        mcpDeviceToolAdapter.definitions().forEach { definition -> tools.put(definition) }
     }
 
     private fun objectSchema(properties: JSONObject): JSONObject = JSONObject()
@@ -326,23 +463,23 @@ class PocketMcpHttpServer(
                     toolResult(snapshotJson(snapshot, maxNodes))
                 }
             }
-            McpDeviceToolAdapter.EXTERNAL_SCREENSHOT_NAME,
-            McpDeviceToolAdapter.EXTERNAL_HOME_NAME,
-            McpDeviceToolAdapter.EXTERNAL_BACK_NAME,
-            McpDeviceToolAdapter.EXTERNAL_TAP_NAME,
-            McpDeviceToolAdapter.EXTERNAL_SWIPE_NAME,
-            McpDeviceToolAdapter.EXTERNAL_TYPE_TEXT_NAME,
-            ->
-                mcpDeviceToolAdapter.call(name, arguments)
             "device_open_settings" -> openSettings()
             "device_click_node" -> clickNode(arguments)
-            else -> toolResult(
-                JSONObject()
-                    .put("success", false)
-                    .put("error", "UNKNOWN_TOOL")
-                    .put("tool", name),
-                isError = true,
-            )
+            "device_fill_field" -> fillField(arguments)
+            "device_get_field" -> getField(arguments)
+            "device_type_node" -> typeNode(arguments)
+            "device_set_progress" -> setProgress(arguments)
+            else -> if (mcpDeviceToolAdapter.handles(name)) {
+                mcpDeviceToolAdapter.call(name, arguments)
+            } else {
+                toolResult(
+                    JSONObject()
+                        .put("success", false)
+                        .put("error", "UNKNOWN_TOOL")
+                        .put("tool", name),
+                    isError = true,
+                )
+            }
         }
     }
 
@@ -375,6 +512,255 @@ class PocketMcpHttpServer(
         )
     }
 
+    /**
+     * 금고 값을 꺼내 돌려준다.
+     *
+     * fill_field는 값을 밖으로 내보내지 않지만 이건 내보낸다. 흐름이 그렇게 정해져
+     * 있기 때문이다 — 클라우드 모델이 "이 화면엔 아이디·비밀번호가 필요하다"까지만
+     * 판단하고, 값을 꺼내 기기 안 모델에게 넘기는 건 code가 한다.
+     *
+     * 값이 나가는 만큼 조건은 그대로 지킨다. 계정 필드는 지금 화면에 떠 있는 앱
+     * 것만 준다. 부르는 쪽이 다른 앱 계정을 지목할 수 없다.
+     */
+    /** 지금 화면의 계정 주인. shown은 못 찾았을 때 사람에게 보여줄 이름이다. */
+    private class AccountOwner(val service: String?, val shown: String)
+
+    /**
+     * 계정을 어느 앱 것으로 볼지 정한다. 반드시 메인 스레드에서 부른다.
+     *
+     * 앱이 제 화면에서 직접 로그인받으면 그 앱이다. 그런데 로그인을 웹으로 넘기는
+     * 앱이 많다 — 쿠팡은 크롬 커스텀탭으로 login.coupang.com을 연다. 눈앞의
+     * 패키지만 보면 com.android.chrome이라, 쿠팡 계정을 등록해둬도 찾지 못한다.
+     * 그래서 브라우저일 때는 주소창을 읽어 등록해둔 앱과 맞춰본다.
+     */
+    private fun accountOwner(service: AgentAccessibilityService): AccountOwner {
+        service.browserHost()?.let { host ->
+            return AccountOwner(SecretVault.serviceForHost(service, host), host)
+        }
+        val appPackage = service.rootInActiveWindow?.packageName?.toString()
+        return AccountOwner(appPackage, appPackage ?: "알 수 없는 화면")
+    }
+
+    private fun getField(arguments: JSONObject): JSONObject {
+        val field = arguments.optString("field")
+        if (!SecretVault.FIELDS.containsKey(field)) {
+            return toolError(
+                "UNKNOWN_FIELD",
+                "모르는 필드입니다: $field. 가능한 값: ${SecretVault.FIELDS.keys.joinToString()}",
+            )
+        }
+        val service = AgentAccessibilityService.activeService
+            ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
+
+        val value = AtomicReference<String?>(null)
+        val app = AtomicReference<String?>(null)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            val owner = accountOwner(service)
+            app.set(owner.shown)
+            value.set(
+                when {
+                    !SecretVault.isAccountField(field) -> SecretVault.reveal(service, field)
+                    owner.service == null -> null
+                    else -> SecretVault.reveal(service, field, owner.service)
+                },
+            )
+            latch.countDown()
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+
+        val found = value.get()
+            ?: return toolError(
+                "FIELD_NOT_SET",
+                if (SecretVault.isAccountField(field)) {
+                    "이 앱(${app.get()})의 $field 이(가) 등록돼 있지 않습니다."
+                } else {
+                    "$field 값이 저장돼 있지 않습니다."
+                },
+            )
+        return toolResult(JSONObject().put("success", true).put("field", field).put("value", found))
+    }
+
+    /** 스냅샷에서 고른 입력창에 글자를 넣는다. 포커스에 기대지 않는다. */
+    private fun typeNode(arguments: JSONObject): JSONObject {
+        val snapshotId = arguments.optString("snapshot_id")
+        val nodeId = arguments.optString("node_id")
+        val text = arguments.optString("text")
+        val observed = lastSnapshot.get()
+            ?: return toolError("NO_OBSERVATION", "device_observe를 먼저 호출하세요.")
+        if (snapshotId.isBlank() || snapshotId != observed.fingerprint.hash) {
+            return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
+        }
+        val target = observed.nodes.firstOrNull { it.id == nodeId }
+            ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
+        if (!target.editable) {
+            return toolError("NOT_EDITABLE", "입력창이 아닌 노드입니다: $nodeId")
+        }
+        val service = AgentAccessibilityService.activeService
+            ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
+
+        val done = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            done.set(service.setTextOnSnapshotNode(target, observed.packageName, text))
+            latch.countDown()
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        if (!done.get()) return toolError("TYPE_FAILED", "$nodeId 에 글자를 넣지 못했습니다.")
+
+        captureSnapshotOnMainThread()?.let(lastSnapshot::set)
+        // 값은 응답에 싣지 않는다. 어디에 넣었는지만.
+        return toolResult(JSONObject().put("success", true).put("node_id", nodeId))
+    }
+
+    /**
+     * 스냅샷에서 고른 슬라이더를 그 값으로 옮긴다.
+     *
+     * 범위를 넘는 값은 거절하지 않고 잘라 맞춘다. 모델이 "절반"을 50으로 옮겨
+     * 적었는데 그 슬라이더가 0~10이면 거절해봐야 다시 물어볼 뿐이고, 최댓값으로
+     * 두는 게 의도에 더 가깝다. 대신 실제로 넣은 값을 응답에 담아 알려준다.
+     */
+    private fun setProgress(arguments: JSONObject): JSONObject {
+        val snapshotId = arguments.optString("snapshot_id")
+        val nodeId = arguments.optString("node_id")
+        if (!arguments.has("value")) {
+            return toolError("MISSING_VALUE", "value가 필요합니다.")
+        }
+        val observed = lastSnapshot.get()
+            ?: return toolError("NO_OBSERVATION", "device_observe를 먼저 호출하세요.")
+        if (snapshotId.isBlank() || snapshotId != observed.fingerprint.hash) {
+            return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
+        }
+        val target = observed.nodes.firstOrNull { it.id == nodeId }
+            ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
+        val range = target.range
+            ?: return toolError(
+                "NOT_A_SLIDER",
+                "슬라이더가 아닌 노드입니다: $nodeId. 값을 가진 노드에만 쓸 수 있습니다.",
+            )
+        val service = AgentAccessibilityService.activeService
+            ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
+
+        val wanted = arguments.optDouble("value").toFloat()
+        if (wanted.isNaN()) {
+            return toolError("BAD_VALUE", "value는 숫자여야 합니다.")
+        }
+        val clamped = wanted.coerceIn(range.min, range.max)
+
+        val done = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            done.set(service.setProgressOnSnapshotNode(target, observed.packageName, clamped))
+            latch.countDown()
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        if (!done.get()) {
+            return toolError(
+                "SET_PROGRESS_FAILED",
+                "$nodeId 값을 바꾸지 못했습니다. 앱이 이 슬라이더의 값 설정을 지원하지 " +
+                    "않으면 화면에서 직접 끌어야 합니다.",
+            )
+        }
+
+        captureSnapshotOnMainThread()?.let(lastSnapshot::set)
+        val note = if (clamped != wanted) " (${range.min}~${range.max} 범위로 맞춤)" else ""
+        return toolResult(
+            JSONObject()
+                .put("success", true)
+                .put("node_id", nodeId)
+                .put("value", clamped)
+                .put("message", "$nodeId 를 $clamped 로 옮겼습니다$note."),
+        )
+    }
+
+    private fun fieldHints(): String =
+        SecretVault.FIELDS.entries.joinToString(", ") { (key, hint) -> "$key($hint)" }
+
+    /**
+     * 금고 값으로 입력창 하나를 채운다.
+     *
+     * device_click_node와 같은 방식으로 스냅샷의 노드를 지목받는다. 포커스에
+     * 기대면 크롬 웹 폼처럼 포커스가 안 잡히는 화면에서 모든 값이 첫 칸에
+     * 덮어써진다(실측). 어느 칸에 넣는지는 분명해야 한다 — 개인정보다.
+     *
+     * 응답에 값을 싣지 않는다. 무엇을 넣었는지만 알려준다.
+     */
+    private fun fillField(arguments: JSONObject): JSONObject {
+        val field = arguments.optString("field")
+        if (!SecretVault.FIELDS.containsKey(field)) {
+            return toolError(
+                "UNKNOWN_FIELD",
+                "모르는 필드입니다: $field. 가능한 값: ${SecretVault.FIELDS.keys.joinToString()}",
+            )
+        }
+
+        val snapshotId = arguments.optString("snapshot_id")
+        val nodeId = arguments.optString("node_id")
+        val observed = lastSnapshot.get()
+            ?: return toolError("NO_OBSERVATION", "device_observe를 먼저 호출하세요.")
+        if (snapshotId.isBlank() || snapshotId != observed.fingerprint.hash) {
+            return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
+        }
+        val target = observed.nodes.firstOrNull { it.id == nodeId }
+            ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
+        if (!target.editable) {
+            return toolError("NOT_EDITABLE", "입력창이 아닌 노드입니다: $nodeId")
+        }
+
+        val service = AgentAccessibilityService.activeService
+            ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
+
+        // 계정 필드는 지금 화면의 앱 것만 쓴다. 부르는 쪽이 고르게 하면 한 앱의
+        // 자격증명이 다른 앱 화면에 들어갈 수 있다.
+        val result = AtomicBoolean(false)
+        val missing = AtomicReference<String?>(null)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            val owner = accountOwner(service)
+            val value = when {
+                !SecretVault.isAccountField(field) -> SecretVault.reveal(service, field)
+                owner.service == null -> null
+                else -> SecretVault.reveal(service, field, owner.service)
+            }
+            if (value == null) {
+                missing.set(
+                    if (SecretVault.isAccountField(field)) {
+                        "이 앱(${owner.shown})의 $field 이(가) 등록돼 있지 않습니다. " +
+                            "앱의 \"내 정보\" 화면에서 이 앱 계정을 먼저 등록하세요."
+                    } else {
+                        "$field 값이 저장돼 있지 않습니다. 앱 화면에서 먼저 등록하세요."
+                    },
+                )
+            } else {
+                result.set(service.setTextOnSnapshotNode(target, observed.packageName, value))
+            }
+            latch.countDown()
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+
+        missing.get()?.let { message -> return toolError("FIELD_NOT_SET", message) }
+        if (!result.get()) {
+            return toolError("FILL_FAILED", "$nodeId 에 값을 넣지 못했습니다.")
+        }
+
+        captureSnapshotOnMainThread()?.let(lastSnapshot::set)
+        return toolResult(
+            JSONObject()
+                .put("success", true)
+                .put("field", field)
+                .put("node_id", nodeId)
+                .put("message", "$field 값을 입력했습니다."),
+        )
+    }
+
+    /** 관찰할 때 본 그 항목이 지금도 같은 자리에 같은 내용으로 있는지. */
+    private fun isStillThere(target: UiNode, current: UiSnapshot): Boolean {
+        val now = current.nodes.firstOrNull { node -> node.id == target.id } ?: return false
+        return now.text == target.text &&
+            now.contentDescription == target.contentDescription &&
+            now.bounds == target.bounds
+    }
+
     private fun clickNode(arguments: JSONObject): JSONObject {
         val snapshotId = arguments.optString("snapshot_id")
         val nodeId = arguments.optString("node_id")
@@ -384,20 +770,27 @@ class PocketMcpHttpServer(
             return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
         }
 
-        val current = captureSnapshotOnMainThread()
-            ?: return toolError("NO_ACTIVE_WINDOW", "현재 UI 트리를 읽을 수 없습니다.")
-        if (
-            current.packageName != observed.packageName ||
-            current.fingerprint.hash != snapshotId
-        ) {
-            lastSnapshot.set(current)
-            return toolError("SCREEN_CHANGED", "관찰 후 화면이 바뀌어 클릭을 거부했습니다.")
-        }
-
         val target = observed.nodes.firstOrNull { it.id == nodeId }
             ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
         if (!target.enabled) {
             return toolError("NODE_DISABLED", "비활성 노드는 클릭할 수 없습니다.")
+        }
+
+        val current = captureSnapshotOnMainThread()
+            ?: return toolError("NO_ACTIVE_WINDOW", "현재 UI 트리를 읽을 수 없습니다.")
+        // 화면 전체가 그대로인지가 아니라, 누르려는 그 항목이 그대로인지를 본다.
+        // 전체 지문으로 보면 시계나 타이머처럼 매초 바뀌는 값 하나 때문에 어떤
+        // 클릭도 통과하지 못한다(실측: 타이머 화면의 "취소"를 누를 수 없어 좌표
+        // 탭으로 우회해야 했다). 시계가 있는 화면 전반이 그렇다.
+        //
+        // 이 검사가 막으려던 건 "관찰한 뒤 화면이 넘어가서 엉뚱한 걸 누르는 것"인데,
+        // 그건 누를 항목의 위치와 내용이 그대로인지만 봐도 알 수 있다.
+        if (current.packageName != observed.packageName || !isStillThere(target, current)) {
+            lastSnapshot.set(current)
+            return toolError(
+                "SCREEN_CHANGED",
+                "누르려던 항목이 사라지거나 자리를 옮겨 클릭을 거부했습니다.",
+            )
         }
 
         val action = clickSnapshotNodeOnMainThread(target, observed.packageName)
@@ -525,17 +918,27 @@ class PocketMcpHttpServer(
                     .put("id", node.id)
                     .put("text", node.text ?: JSONObject.NULL)
                     .put("content_description", node.contentDescription ?: JSONObject.NULL)
+                    .put("hint", node.hint ?: JSONObject.NULL)
                     .put("class_name", node.className ?: JSONObject.NULL)
                     .put("view_id", node.viewId ?: JSONObject.NULL)
                     .put("clickable", node.clickable)
                     .put("editable", node.editable)
+                    .put("password", node.password)
                     .put("scrollable", node.scrollable)
                     .put("enabled", node.enabled)
                     .put("checked", node.checked ?: JSONObject.NULL)
-                    .put("password", node.password)
                     .put("focused", node.focused)
                     .put("input_type", node.inputType)
                     .put("visible_to_user", node.visibleToUser)
+                    .put(
+                        "range",
+                        node.range?.let { span ->
+                            JSONObject()
+                                .put("min", span.min)
+                                .put("max", span.max)
+                                .put("current", span.current)
+                        } ?: JSONObject.NULL,
+                    )
                     .put("depth", node.depth)
                     .put(
                         "bounds",
