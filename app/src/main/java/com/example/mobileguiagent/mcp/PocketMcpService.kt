@@ -16,6 +16,7 @@ import android.content.pm.PackageManager
 import androidx.core.app.NotificationCompat
 import com.example.mobileguiagent.MainActivity
 import com.example.mobileguiagent.R
+import com.example.mobileguiagent.voice.VoiceCommandService
 
 class PocketMcpService : Service() {
     private var server: PocketMcpHttpServer? = null
@@ -114,11 +115,19 @@ class PocketMcpService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val voiceCommandIntent = PendingIntent.getForegroundService(
+            this,
+            1,
+            Intent(this, VoiceCommandService::class.java)
+                .setAction(VoiceCommandService.ACTION_START),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("PocketMCP 실행 중")
             .setContentText(status)
             .setContentIntent(openAppIntent)
+            .addAction(0, "음성 명령", voiceCommandIntent)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()

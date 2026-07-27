@@ -5,9 +5,10 @@ import android.os.Looper
 import com.example.mobileguiagent.accessibility.AgentAccessibilityService
 import com.example.mobileguiagent.device.DeviceToolRegistry
 import com.example.mobileguiagent.model.NodeActionResult
+import com.example.mobileguiagent.model.LocalChatRepository
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiSnapshot
-import com.example.mobileguiagent.repository.AgentRepository
+import com.example.mobileguiagent.model.isMeaningfulForAgent
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -26,7 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Minimal stateless MCP Streamable HTTP server for the Android PoC.
+ * Minimal stateless MCP Streamable HTTP server for Android device control.
  *
  * It implements the MCP initialization, ping, tools/list, and tools/call
  * methods needed by Codex. GET /mcp deliberately returns 405 because this
@@ -249,9 +250,9 @@ class PocketMcpHttpServer(
                         ),
                     ),
             )
-            .put(
-                mcpDeviceToolAdapter.screenshotDefinition(),
-            ),
+            .also { tools ->
+                mcpDeviceToolAdapter.definitions().forEach(tools::put)
+            },
     ).also { result ->
         result.getJSONArray("tools").put(
             JSONObject()
@@ -325,7 +326,13 @@ class PocketMcpHttpServer(
                     toolResult(snapshotJson(snapshot, maxNodes))
                 }
             }
-            McpDeviceToolAdapter.EXTERNAL_SCREENSHOT_NAME ->
+            McpDeviceToolAdapter.EXTERNAL_SCREENSHOT_NAME,
+            McpDeviceToolAdapter.EXTERNAL_HOME_NAME,
+            McpDeviceToolAdapter.EXTERNAL_BACK_NAME,
+            McpDeviceToolAdapter.EXTERNAL_TAP_NAME,
+            McpDeviceToolAdapter.EXTERNAL_SWIPE_NAME,
+            McpDeviceToolAdapter.EXTERNAL_TYPE_TEXT_NAME,
+            ->
                 mcpDeviceToolAdapter.call(name, arguments)
             "device_open_settings" -> openSettings()
             "device_click_node" -> clickNode(arguments)
@@ -395,13 +402,27 @@ class PocketMcpHttpServer(
 
         val action = clickSnapshotNodeOnMainThread(target, observed.packageName)
             ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
+        var success = action.success
+        var method = "node_click"
+        if (
+            !success &&
+            target.visibleToUser &&
+            target.bounds.width() > 0 &&
+            target.bounds.height() > 0
+        ) {
+            success = tapOnMainThread(
+                target.bounds.exactCenterX(),
+                target.bounds.exactCenterY(),
+            )
+            if (success) method = "coordinate_tap"
+        }
         val after = waitForScreenChange(current)
         if (after != null) lastSnapshot.set(after)
         val changed = after?.fingerprint?.hash != current.fingerprint.hash
 
         return toolResult(
             JSONObject()
-                .put("success", action.success)
+                .put("success", success)
                 .put("node_id", nodeId)
                 .put(
                     "label",
@@ -409,6 +430,7 @@ class PocketMcpHttpServer(
                 )
                 .put("matched_text", action.matchedText ?: JSONObject.NULL)
                 .put("used_clickable_ancestor", action.usedClickableAncestor)
+                .put("method", method)
                 .put("screen_changed", changed)
                 .put("before_package", current.packageName)
                 .put("after_package", after?.packageName ?: current.packageName)
@@ -416,7 +438,7 @@ class PocketMcpHttpServer(
                     "after_snapshot_id",
                     after?.fingerprint?.hash ?: current.fingerprint.hash,
                 ),
-            isError = !action.success,
+            isError = !success,
         )
     }
 
@@ -447,6 +469,20 @@ class PocketMcpHttpServer(
         return result.get()
     }
 
+    private fun tapOnMainThread(x: Float, y: Float): Boolean {
+        val service = AgentAccessibilityService.activeService ?: return false
+        val success = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            service.tap(x, y) { completed ->
+                success.set(completed)
+                latch.countDown()
+            }
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        return success.get()
+    }
+
     private fun waitForScreenChange(before: UiSnapshot): UiSnapshot? {
         val deadline = System.currentTimeMillis() + ACTION_VERIFY_TIMEOUT_MS
         var latest: UiSnapshot? = null
@@ -467,20 +503,23 @@ class PocketMcpHttpServer(
     }
 
     private fun deviceStatus(): JSONObject {
-        val state = AgentRepository.state.value
+        val snapshot = captureSnapshotOnMainThread()
         return JSONObject()
             .put("success", true)
             .put("server", SERVER_NAME)
             .put("server_version", SERVER_VERSION)
             .put("accessibility_connected", AgentAccessibilityService.activeService != null)
-            .put("foreground_package", state.foregroundPackage)
-            .put("agent_running", state.running)
+            .put("foreground_package", snapshot?.packageName.orEmpty())
+            .put("agent_running", LocalChatRepository.state.value.generating)
             .put("timestamp_ms", System.currentTimeMillis())
     }
 
     private fun snapshotJson(snapshot: UiSnapshot, maxNodes: Int): JSONObject {
+        // Keep the complete snapshot in lastSnapshot so node ids and stale
+        // checks remain stable. Only the payload sent to an agent is filtered.
+        val meaningfulNodes = snapshot.nodes.filter { node -> node.isMeaningfulForAgent() }
         val nodes = JSONArray()
-        snapshot.nodes.take(maxNodes).forEach { node ->
+        meaningfulNodes.take(maxNodes).forEach { node ->
             nodes.put(
                 JSONObject()
                     .put("id", node.id)
@@ -493,6 +532,10 @@ class PocketMcpHttpServer(
                     .put("scrollable", node.scrollable)
                     .put("enabled", node.enabled)
                     .put("checked", node.checked ?: JSONObject.NULL)
+                    .put("password", node.password)
+                    .put("focused", node.focused)
+                    .put("input_type", node.inputType)
+                    .put("visible_to_user", node.visibleToUser)
                     .put("depth", node.depth)
                     .put(
                         "bounds",
@@ -510,8 +553,9 @@ class PocketMcpHttpServer(
             .put("captured_at_ms", snapshot.capturedAtMillis)
             .put("package_name", snapshot.packageName)
             .put("node_count", snapshot.nodes.size)
+            .put("meaningful_node_count", meaningfulNodes.size)
             .put("returned_node_count", nodes.length())
-            .put("truncated", snapshot.nodes.size > nodes.length())
+            .put("truncated", meaningfulNodes.size > nodes.length())
             .put("nodes", nodes)
     }
 

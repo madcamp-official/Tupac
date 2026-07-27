@@ -14,9 +14,36 @@ data class UiNode(
     val scrollable: Boolean,
     val enabled: Boolean,
     val checked: Boolean?,
+    /** Strong local-only signal supplied directly by AccessibilityNodeInfo. */
+    val password: Boolean = false,
+    /** Helps local input handling without exposing the field value. */
+    val focused: Boolean = false,
+    /** Android text input flags when this is an editable node. */
+    val inputType: Int = 0,
     val bounds: Rect,
     val depth: Int,
+    /**
+     * Android's current visibility judgement. The full snapshot keeps hidden
+     * nodes for fingerprint/click consistency, but model-facing adapters must
+     * exclude them so the planner cannot choose an occluded or off-screen view.
+     */
+    val visibleToUser: Boolean = true,
 )
+
+/**
+ * Keeps actionable controls and human-readable labels while dropping hidden
+ * layout/decorative nodes. This is deliberately a serialization-time filter:
+ * traversal ids and the snapshot fingerprint continue to use the full tree.
+ */
+fun UiNode.isMeaningfulForAgent(): Boolean =
+    visibleToUser &&
+        (
+            clickable ||
+                editable ||
+                scrollable ||
+                !text.isNullOrBlank() ||
+                !contentDescription.isNullOrBlank()
+            )
 
 data class UiSnapshot(
     val packageName: String,
@@ -64,15 +91,4 @@ data class NodeActionResult(
     val matchedText: String? = null,
     val matchedNodeId: String? = null,
     val usedClickableAncestor: Boolean = false,
-)
-
-data class PocMetric(
-    val task: String,
-    val success: Boolean,
-    val steps: Int,
-    val latencyMs: Long,
-    val nodeActionUsed: Boolean,
-    val coordinateActionUsed: Boolean,
-    val screenChanged: Boolean,
-    val failureCode: String?,
 )

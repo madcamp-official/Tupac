@@ -10,8 +10,6 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import android.view.Display
@@ -21,8 +19,9 @@ import java.io.ByteArrayOutputStream
 import com.example.mobileguiagent.model.NodeActionResult
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiSnapshot
-import com.example.mobileguiagent.model.UiSnapshotStore
-import com.example.mobileguiagent.repository.AgentRepository
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class AgentAccessibilityService : AccessibilityService() {
     fun openAndroidSettings(): Boolean = runCatching {
@@ -34,16 +33,6 @@ class AgentAccessibilityService : AccessibilityService() {
     }.getOrElse {
         Log.e(TAG, "Unable to open Android settings", it)
         false
-    }
-
-    private val snapshotHandler = Handler(Looper.getMainLooper())
-    private val persistSnapshot = Runnable {
-        captureSnapshot()
-            ?.takeIf { snapshot -> snapshot.packageName == SETTINGS_PACKAGE }
-            ?.let { snapshot ->
-                runCatching { UiSnapshotStore.write(this, snapshot) }
-                    .onFailure { Log.e(TAG, "Unable to persist UI snapshot", it) }
-            }
     }
 
     override fun onServiceConnected() {
@@ -58,13 +47,12 @@ class AgentAccessibilityService : AccessibilityService() {
             notificationTimeout = 100
         }
         activeService = this
-        AgentRepository.onServiceConnectionChanged(connected = true)
+        mutableConnectionState.value = true
         Log.i(TAG, "Accessibility service connected")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        AgentRepository.onServiceConnectionChanged(connected = true)
 
         val packageName = event.packageName?.toString().orEmpty()
         val className = event.className?.toString().orEmpty()
@@ -72,21 +60,6 @@ class AgentAccessibilityService : AccessibilityService() {
             TAG,
             "package=$packageName, class=$className, type=${event.eventType}",
         )
-        AgentRepository.onAccessibilityEvent(
-            packageName = packageName,
-            className = className,
-            eventType = event.eventType,
-        )
-        if (
-            packageName == SETTINGS_PACKAGE &&
-            (
-                event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-                    event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-                )
-        ) {
-            snapshotHandler.removeCallbacks(persistSnapshot)
-            snapshotHandler.postDelayed(persistSnapshot, SNAPSHOT_SETTLE_DELAY_MS)
-        }
     }
 
     override fun onInterrupt() {
@@ -94,11 +67,10 @@ class AgentAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        snapshotHandler.removeCallbacks(persistSnapshot)
         val wasActiveService = activeService === this
         if (wasActiveService) {
             activeService = null
-            AgentRepository.onServiceConnectionChanged(connected = false)
+            mutableConnectionState.value = false
         }
         super.onDestroy()
     }
@@ -229,36 +201,18 @@ class AgentAccessibilityService : AccessibilityService() {
             scrollable = node.isScrollable,
             enabled = node.isEnabled,
             checked = if (node.isCheckable) node.isChecked else null,
+            password = node.isPassword,
+            focused = node.isFocused,
+            inputType = node.inputType,
             bounds = bounds,
             depth = depth,
+            visibleToUser = node.isVisibleToUser,
         )
 
         for (index in 0 until node.childCount) {
             collectNodes(node.getChild(index), depth + 1, output)
         }
         return output
-    }
-
-    fun clickText(
-        candidates: List<String>,
-        exactOnly: Boolean = false,
-    ): NodeActionResult {
-        val root = rootInActiveWindow ?: return NodeActionResult(success = false)
-        val match = findBestMatch(root, candidates, exactOnly)
-            ?: return NodeActionResult(success = false)
-        val clickable = findClickableNode(match.node)
-            ?: return NodeActionResult(
-                success = false,
-                matchedText = match.label,
-                matchedNodeId = match.node.viewIdResourceName,
-            )
-        val clicked = clickable.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        return NodeActionResult(
-            success = clicked,
-            matchedText = match.label,
-            matchedNodeId = match.node.viewIdResourceName,
-            usedClickableAncestor = clickable.usedAncestor,
-        )
     }
 
     /**
@@ -351,14 +305,90 @@ class AgentAccessibilityService : AccessibilityService() {
         return editable.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
     }
 
+    /**
+     * Sets text only on the exact editable node selected from the latest
+     * snapshot. Unlike setTextOnFirstEditable, this has no fallback to another
+     * field, which prevents a credential from landing in the wrong input.
+     */
+    fun setTextOnSnapshotNode(
+        target: UiNode,
+        expectedPackage: String,
+        text: CharArray,
+    ): Boolean {
+        val root = rootInActiveWindow ?: return false
+        if (root.packageName?.toString() != expectedPackage) return false
+        val nodes = mutableListOf<IndexedNativeNode>()
+        collectIndexedNativeNodes(root, nodes)
+        val exact = nodes.firstOrNull { item ->
+            item.id == target.id &&
+                item.node.isVisibleToUser &&
+                item.node.isEnabled &&
+                item.node.isEditable &&
+                item.node.isPassword == target.password &&
+                (
+                    target.viewId.isNullOrBlank() ||
+                        item.node.viewIdResourceName == target.viewId
+                    ) &&
+                (
+                    target.className.isNullOrBlank() ||
+                        item.node.className?.toString() == target.className
+                    )
+        }?.node ?: return false
+        val arguments = Bundle().apply {
+            putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                String(text),
+            )
+        }
+        return exact.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+    }
+
+    /**
+     * Invokes the focused field's IME action (Search/Done/Go) without guessing
+     * at an unlabeled icon beside the text field.
+     */
+    fun submitFirstEditable(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        val root = rootInActiveWindow ?: return false
+        val editable =
+            findFirstNode(root) { node ->
+                node.isEditable && node.isEnabled && node.isFocused
+            } ?: findFirstNode(root) { node -> node.isEditable && node.isEnabled }
+            ?: return false
+        return editable.performAction(
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id,
+        )
+    }
+
+    fun goHome(): Boolean = performGlobalAction(GLOBAL_ACTION_HOME)
+
     fun tap(
         x: Float,
         y: Float,
         onComplete: (Boolean) -> Unit,
     ) {
-        val path = Path().apply { moveTo(x, y) }
+        val path = Path().apply {
+            moveTo(x, y)
+            // Some Samsung/WebView combinations acknowledge a zero-length
+            // gesture but never dispatch a touch event. A sub-pixel segment
+            // remains a tap while ensuring the gesture has a real contour.
+            lineTo(
+                if (x >= TAP_PATH_EPSILON_PX) {
+                    x - TAP_PATH_EPSILON_PX
+                } else {
+                    x + TAP_PATH_EPSILON_PX
+                },
+                y,
+            )
+        }
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, 50L))
+            .addStroke(
+                GestureDescription.StrokeDescription(
+                    path,
+                    0L,
+                    TAP_GESTURE_DURATION_MS,
+                ),
+            )
             .build()
         dispatchGesture(
             gesture,
@@ -409,62 +439,6 @@ class AgentAccessibilityService : AccessibilityService() {
             },
             null,
         )
-    }
-
-    fun dumpTreeToLog(): UiSnapshot? {
-        val snapshot = captureSnapshot() ?: return null
-        snapshot.nodes.forEach { node ->
-            Log.d(
-                TREE_TAG,
-                "${"  ".repeat(node.depth)}${node.id} " +
-                    "text=${node.text} desc=${node.contentDescription} " +
-                    "class=${node.className} viewId=${node.viewId} " +
-                    "clickable=${node.clickable} editable=${node.editable} " +
-                    "scrollable=${node.scrollable} enabled=${node.enabled} " +
-                    "checked=${node.checked} bounds=${node.bounds.flattenToString()}",
-            )
-        }
-        return snapshot
-    }
-
-    private fun findBestMatch(
-        root: AccessibilityNodeInfo,
-        candidates: List<String>,
-        exactOnly: Boolean,
-    ): TextMatch? {
-        val nodes = mutableListOf<AccessibilityNodeInfo>()
-        collectNativeNodes(root, nodes)
-        val visibleNodes = nodes.filter { node -> node.isVisibleToUser }
-        val normalizedCandidates = candidates.map { candidate ->
-            candidate to normalize(candidate)
-        }
-
-        normalizedCandidates.forEach { (candidate, normalizedCandidate) ->
-            visibleNodes.firstOrNull { node ->
-                nodeLabels(node).any { label -> normalize(label) == normalizedCandidate }
-            }?.let { return TextMatch(it, candidate) }
-        }
-
-        if (exactOnly) return null
-
-        normalizedCandidates.forEach { (candidate, normalizedCandidate) ->
-            visibleNodes.firstOrNull { node ->
-                nodeLabels(node).any { label -> normalize(label).contains(normalizedCandidate) }
-            }?.let { return TextMatch(it, candidate) }
-        }
-        return null
-    }
-
-    private fun collectNativeNodes(
-        node: AccessibilityNodeInfo?,
-        output: MutableList<AccessibilityNodeInfo>,
-        depth: Int = 0,
-    ) {
-        if (node == null || output.size >= MAX_NODES || depth > MAX_DEPTH) return
-        output += node
-        for (index in 0 until node.childCount) {
-            collectNativeNodes(node.getChild(index), output, depth + 1)
-        }
     }
 
     private fun collectIndexedNativeNodes(
@@ -532,11 +506,6 @@ class AgentAccessibilityService : AccessibilityService() {
         .replace(Regex("\\s+"), " ")
         .trim()
 
-    private data class TextMatch(
-        val node: AccessibilityNodeInfo,
-        val label: String,
-    )
-
     private data class ClickableMatch(
         val node: AccessibilityNodeInfo,
         val usedAncestor: Boolean,
@@ -555,11 +524,13 @@ class AgentAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "AgentAccessibility"
-        private const val TREE_TAG = "AgentUiTree"
         private const val MAX_NODES = 1_500
         private const val MAX_DEPTH = 80
-        private const val SETTINGS_PACKAGE = "com.android.settings"
-        private const val SNAPSHOT_SETTLE_DELAY_MS = 180L
+        private const val TAP_PATH_EPSILON_PX = 2f
+        private const val TAP_GESTURE_DURATION_MS = 120L
+
+        private val mutableConnectionState = MutableStateFlow(false)
+        val connectionState: StateFlow<Boolean> = mutableConnectionState.asStateFlow()
 
         @Volatile
         var activeService: AgentAccessibilityService? = null
