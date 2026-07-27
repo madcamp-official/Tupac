@@ -24,15 +24,17 @@ object LlamaBridge {
     external fun nativeModelInfo(handle: Long): String
 
     /**
-     * [applyTemplate]가 false면 [prompt]를 그대로 넣는다. llama.cpp가 들고 있는
-     * EXAONE 4.0 템플릿 사본이 gguf의 실제 템플릿과 달라서, 지금은 호출 측이
-     * 포맷한 프롬프트를 넘기는 쪽이 정확하다.
+     * system/user 한 쌍으로 한 번 생성한다. 모델의 챗 템플릿이 적용되고 추론
+     * 모드는 꺼진다. 실패는 "ERROR:"로 시작하는 문자열로 돌아온다.
+     *
+     * 프롬프트와 답은 로그에 남기지 않는다 — 여기 금고 값이 실린다.
      */
-    external fun nativeGenerate(
+    external fun nativeChat(
         handle: Long,
-        prompt: String,
+        system: String,
+        user: String,
         maxTokens: Int,
-        applyTemplate: Boolean,
+        temperature: Float,
     ): String
 
     external fun nativeFree(handle: Long)

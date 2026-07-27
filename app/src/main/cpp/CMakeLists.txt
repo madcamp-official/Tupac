@@ -13,7 +13,15 @@ add_subdirectory(llama.cpp build-llama)
 
 add_library(llamajni SHARED llama_jni.cpp)
 
+# common을 함께 쓴다. 여기 든 minja가 gguf 안의 지니자 템플릿을 그대로 렌더링한다.
+# llama.h의 llama_chat_apply_template은 llama.cpp가 손으로 옮겨 적은 사본을 쓰는데,
+# EXAONE 4.0 항목이 실제 템플릿과 달라(개행, [|endofturn|], 빈 <think> 블록 누락)
+# 모델이 답 대신 추론을 시작한다.
+target_include_directories(llamajni PRIVATE
+        llama.cpp/common)
+
 target_link_libraries(llamajni
         llama
+        llama-common
         android
         log)

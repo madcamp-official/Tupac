@@ -1,5 +1,8 @@
-// llama.cpp를 안드로이드에서 부를 수 있는지 확인하기 위한 최소 JNI 껍데기다.
-// 앱 기능에 연결하지 않는다. 모델을 올리고, 한 번 생성해보고, 내려놓는 것까지만 한다.
+// 기기 안 모델을 부르는 통로.
+//
+// 여기를 지나는 프롬프트에는 금고에서 꺼낸 값이 그대로 들어 있다(SecretFiller가
+// 채울 값을 계획에 실어 보낸다). 그래서 이 파일은 프롬프트도, 생성된 답도
+// 로그로 내보내지 않는다. 길이와 개수만 남긴다.
 
 #include <jni.h>
 #include <android/log.h>
@@ -7,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "chat.h"
 #include "llama.h"
 
 #define LOG_TAG "llamajni"
@@ -17,9 +21,10 @@ namespace {
 
 // 모델 하나에 딸린 것들을 한 덩어리로 들고 있다가 free에서 통째로 정리한다.
 struct Session {
-    llama_model   * model   = nullptr;
-    llama_context * ctx     = nullptr;
-    llama_sampler * sampler = nullptr;
+    llama_model             * model   = nullptr;
+    llama_context           * ctx     = nullptr;
+    llama_sampler           * sampler = nullptr;
+    common_chat_templates_ptr templates;
 };
 
 std::string to_utf8(JNIEnv * env, jstring s) {
@@ -51,6 +56,26 @@ void ensure_backend() {
         llama_backend_init();
         g_backend_ready = true;
     }
+}
+
+/**
+ * 이 한 번의 생성에 쓸 샘플러.
+ *
+ * temperature <= 0이면 그리디다. 기본은 그리디 — 같은 계획에는 같은 답이 나와야
+ * 대조 결과를 믿을 수 있다. 다시 물을 때만 온도를 준다. 그리디로 다시 물어봤자
+ * 글자 하나까지 같은 답이 돌아오기 때문이다.
+ */
+llama_sampler * make_sampler(float temperature) {
+    llama_sampler * chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    if (temperature <= 0.0f) {
+        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+    } else {
+        llama_sampler_chain_add(chain, llama_sampler_init_temp(temperature));
+        // 씨앗을 고정한다. 다시 물을 때마다 다른 답이 나오면 무엇 때문에 통과했는지
+        // 알 수 없고, 실패를 다시 재현할 수도 없다.
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(1234));
+    }
+    return chain;
 }
 
 std::string piece_of(const llama_vocab * vocab, llama_token token) {
@@ -107,13 +132,10 @@ Java_com_example_mobileguiagent_llm_LlamaBridge_nativeLoadModel(
         return 0;
     }
 
-    // 에코를 확인하는 자리라 샘플링은 그리디로 못 박는다. 같은 입력이면
-    // 같은 출력이 나와야 "됐다/안 됐다"를 판단할 수 있다.
-    llama_sampler * sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
-
-    auto * session = new Session{model, ctx, sampler};
-    LOGi("모델 로딩 완료 (%.1f MiB)", (double) llama_model_size(model) / (1024.0 * 1024.0));
+    auto * session = new Session{model, ctx, nullptr, common_chat_templates_init(model, "")};
+    LOGi("모델 로딩 완료 (%.1f MiB), 템플릿=%s",
+         (double) llama_model_size(model) / (1024.0 * 1024.0),
+         common_chat_templates_source(session->templates.get()).c_str());
     return reinterpret_cast<jlong>(session);
 }
 
@@ -136,38 +158,49 @@ Java_com_example_mobileguiagent_llm_LlamaBridge_nativeModelInfo(JNIEnv * env, jo
     return env->NewStringUTF(out.c_str());
 }
 
-// 3단계: 짧은 생성.
-//
-// apply_template=true면 llama_chat_apply_template을 쓴다. 다만 이 함수는 지니자
-// 렌더러가 아니라 llama.cpp가 손으로 옮겨 적은 템플릿 목록을 쓴다. EXAONE 4.0의
-// 경우 그 사본이 gguf에 든 실제 템플릿과 달라서(개행, [|endofturn|], <think>
-// 블록이 빠진다) 모델이 추론 모드에 갇힌다. 그래서 호출 측이 프롬프트를 이미
-// 포맷해 넘길 수 있도록 apply_template=false 경로를 둔다.
+/**
+ * system/user 한 쌍을 모델의 챗 템플릿에 씌워 한 번 생성한다.
+ *
+ * 템플릿은 common(minja)이 gguf 안의 지니자 원본을 그대로 렌더링한다.
+ * llama.h의 llama_chat_apply_template을 쓰지 않는 이유는 파일 맨 위에 적었다.
+ *
+ * enable_thinking=false가 핵심이다. EXAONE 4.0은 추론 모델이라 그냥 두면
+ * 답 대신 생각을 쓴다 — 실측으로 "지시문을 그대로 답하라"는 프롬프트에
+ * 지시문까지 따라 적었다. 템플릿이 빈 <think></think>를 미리 닫아주면
+ * 첫 토큰부터 답이 나온다.
+ *
+ * 프롬프트가 n_ctx를 넘으면 생성하지 않고 알린다. 넘긴 채로 밀어 넣으면
+ * 앞부분이 잘려나가는데, 잘리는 앞부분이 하필 지시문이다.
+ */
 JNIEXPORT jstring JNICALL
-Java_com_example_mobileguiagent_llm_LlamaBridge_nativeGenerate(
-        JNIEnv * env, jobject, jlong handle, jstring jprompt, jint max_tokens,
-        jboolean apply_template) {
+Java_com_example_mobileguiagent_llm_LlamaBridge_nativeChat(
+        JNIEnv * env, jobject, jlong handle, jstring jsystem, jstring juser, jint max_tokens,
+        jfloat temperature) {
     auto * s = reinterpret_cast<Session *>(handle);
     if (s == nullptr) {
         return env->NewStringUTF("ERROR: session이 null");
     }
 
-    const std::string user = to_utf8(env, jprompt);
+    llama_sampler_free(s->sampler);
+    s->sampler = make_sampler(temperature);
 
-    std::string prompt = user;
-    const char * tmpl = apply_template ? llama_model_chat_template(s->model, nullptr) : nullptr;
-    if (tmpl != nullptr) {
-        llama_chat_message msg{"user", user.c_str()};
-        std::vector<char> buf(user.size() * 4 + 2048);
-        const int32_t n = llama_chat_apply_template(
-                tmpl, &msg, 1, /*add_ass=*/true, buf.data(), (int32_t) buf.size());
-        if (n > 0 && n <= (int32_t) buf.size()) {
-            prompt.assign(buf.data(), n);
-        } else {
-            LOGi("챗 템플릿 적용 실패(%d) — 프롬프트를 그대로 쓴다", n);
-        }
+    common_chat_templates_inputs inputs;
+    inputs.use_jinja             = true;
+    inputs.add_generation_prompt = true;
+    inputs.enable_thinking       = false;
+    inputs.reasoning_format      = COMMON_REASONING_FORMAT_NONE;
+    inputs.messages = {
+        {.role = "system", .content = to_utf8(env, jsystem)},
+        {.role = "user",   .content = to_utf8(env, juser)},
+    };
+
+    std::string prompt;
+    try {
+        prompt = common_chat_templates_apply(s->templates.get(), inputs).prompt;
+    } catch (const std::exception & e) {
+        LOGe("챗 템플릿 렌더링 실패: %s", e.what());
+        return env->NewStringUTF("ERROR: 챗 템플릿 렌더링 실패");
     }
-    LOGi("최종 프롬프트 >>>%s<<<", prompt.c_str());
 
     // 한 번 부르는 것이 한 번의 대화다. 앞선 호출의 KV가 남아 있으면 다음
     // 호출이 그걸 대화 기록으로 읽는다.
@@ -186,7 +219,15 @@ Java_com_example_mobileguiagent_llm_LlamaBridge_nativeGenerate(
         return env->NewStringUTF("ERROR: 토크나이즈 실패");
     }
     tokens.resize(n_prompt);
-    LOGi("프롬프트 토큰 %d개", n_prompt);
+
+    const int32_t n_ctx = (int32_t) llama_n_ctx(s->ctx);
+    LOGi("프롬프트 토큰 %d개 / n_ctx %d", n_prompt, n_ctx);
+    if (n_prompt + max_tokens > n_ctx) {
+        const std::string message =
+                "ERROR: 프롬프트가 컨텍스트를 넘습니다(" + std::to_string(n_prompt) +
+                "+" + std::to_string(max_tokens) + " > " + std::to_string(n_ctx) + ")";
+        return env->NewStringUTF(message.c_str());
+    }
 
     if (llama_decode(s->ctx, llama_batch_get_one(tokens.data(), (int32_t) tokens.size())) != 0) {
         return env->NewStringUTF("ERROR: 프롬프트 decode 실패");

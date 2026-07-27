@@ -2,6 +2,7 @@ package com.example.mobileguiagent.llm
 
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.example.mobileguiagent.agent.LocalStep
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -67,24 +68,15 @@ class LlamaBridgeTest {
             Log.i(tag, "RSS(로딩 후) = ${rssAfterLoad / 1024} MiB (+${(rssAfterLoad - rssBefore) / 1024} MiB)")
             Log.i(tag, "modelInfo = ${LlamaBridge.nativeModelInfo(handle)}")
 
-            val question = "type node_12 minsu 를 그대로 답하세요"
-
-            // gguf 안의 실제 EXAONE 4.0 템플릿을 그대로 옮긴 것이다. 끝의
-            // 빈 <think> 블록이 추론 모드를 끈다 — 이게 없으면 1.2B 모델이
-            // 질문을 수학 문제로 오해하고 수백 토큰을 생각하는 데 쓴다.
-            val formatted = buildString {
-                append("[|user|]\n")
-                append(question)
-                append("[|endofturn|]\n")
-                append("[|assistant|]\n")
-                append("<think>\n\n</think>\n\n")
-            }
+            // "fill" 형식이다. 화면 표기가 "node_12 [type] 라벨"이라 답 형식이
+            // "type node_12 값"이면 앞부분이 겹쳐 모델이 값을 빠뜨린다.
+            val question = "fill node_12 minsu 를 그대로 답하세요"
 
             // 한 번만 재면 페이지 캐시 상태에 따라 크게 흔들린다. 세 번 돌린다.
             var out = ""
             repeat(3) { round ->
                 val genMs = measureTimeMillis {
-                    out = LlamaBridge.nativeGenerate(handle, formatted, 64, applyTemplate = false)
+                    out = LlamaBridge.nativeChat(handle, LocalStep.SYSTEM_PROMPT, question, 64, 0.0f)
                 }
                 Log.i(tag, "[$round] 생성 시간 = ${genMs} ms")
                 Log.i(tag, "[$round] 출력 = >>>$out<<<")

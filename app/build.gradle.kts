@@ -34,8 +34,8 @@ android {
                 //들고 있어서 패키징 단계에서 그대로 부딪힌다.
                 arguments += "-DBUILD_SHARED_LIBS=OFF"
 
-                // 앱에 필요한 건 libllama뿐이다. 나머지 산출물은 다 끈다.
-                arguments += "-DLLAMA_BUILD_COMMON=OFF"
+                // common은 켠다. 지니자 템플릿 렌더러(minja)가 여기 들어 있다.
+                arguments += "-DLLAMA_BUILD_COMMON=ON"
                 arguments += "-DLLAMA_BUILD_TOOLS=OFF"
                 arguments += "-DLLAMA_BUILD_EXAMPLES=OFF"
                 arguments += "-DLLAMA_BUILD_TESTS=OFF"
@@ -59,7 +59,7 @@ android {
                 arguments += "-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16"
                 // REPACK은 가중치를 런타임에 다시 깔아 속도를 얻는 대신 mmap
                 // 사본을 익명 메모리로 한 벌 더 든다. S10e에서는 그 값이 크다.
-                arguments += "-DGGML_CPU_REPACK=OFF"
+                arguments += "-DGGML_CPU_REPACK=ON"
                 arguments += "-DGGML_OPENMP=OFF"
                 arguments += "-DGGML_LLAMAFILE=OFF"
             }
