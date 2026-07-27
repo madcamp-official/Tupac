@@ -349,7 +349,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         try:
             context = handoff or reference
             action, raw = brain.decide(goal, screen, observation, history,
-                                       shortcuts, context)
+                                       shortcuts, context, focused=bool(handoff))
         except brains.BrainError as error:
             sys.exit(f"모델 호출 실패: {error}\n  {brain.hint(error.status)}")
         elapsed = time.time() - started

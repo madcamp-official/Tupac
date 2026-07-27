@@ -346,7 +346,24 @@ class LocalBrain:
         data = _post_json(self.url, payload, {"Content-Type": "application/json"}, timeout=180)
         return data["choices"][0]["message"]["content"]
 
-    def decide(self, goal, screen, observation, history, shortcuts="", extra=""):
+    def decide(self, goal, screen, observation, history, shortcuts="", extra="",
+               focused=False):
+        # 값 입력 구간에서는 길찾기용 규칙과 바로가기 목록을 통째로 뺀다.
+        # 실측: 1.2B에게 필요한 건 절차 네 줄인데 그 앞에 무관한 마흔 줄(바로가기
+        # 20개, "홈 화면이라면 scroll down")이 깔려 있었고, 모델은 비밀번호만
+        # 세 번 반복해 넣고 아이디 칸을 건드리지 않았다. 길찾기는 이미 끝났고
+        # 여기서 할 일은 받은 값을 칸에 넣는 것뿐이다.
+        if focused:
+            user = (f"{extra}\n\n{screen}\n\n"
+                    f"지금까지:\n" + ("\n".join(history[-self.max_history:]) or "(없음)")
+                    + "\n\n한 줄로만 답하세요. 형태: type node_번호 값 / tap node_번호 "
+                      "/ wait / done\n답:")
+            _verbose("프롬프트(local, 값 입력)", user)
+            raw = self._ask([{"role": "system", "content": LOCAL_SYSTEM_PROMPT},
+                             {"role": "user", "content": user}])
+            _verbose("모델 원문(local)", raw)
+            return parse_action(raw), raw
+
         # 확실한 설정 화면은 모델에게 묻지 않는다. 물어봤자 못 고른다(obvious_screen
         # 주석의 실측 참고). 첫 스텝에만 적용한다 — 이미 뭔가 하던 중이라면 목표의
         # 낱말만 보고 엉뚱한 화면으로 튀어버릴 수 있다.
@@ -549,7 +566,8 @@ class GeminiBrain:
                 f"maxOutputTokens나 GEMINI_THINKING 설정을 확인하세요.")
         return text
 
-    def decide(self, goal, screen, observation, history, shortcuts="", extra=""):
+    def decide(self, goal, screen, observation, history, shortcuts="", extra="",
+               focused=False):
         recent = "\n".join(history[-self.max_history:]) or "(아직 없음)"
         # 바로가기 목록은 폰이 tools/list로 알려준 것을 그대로 싣는다. 여기에
         # 하드코딩하면 앱에 화면을 추가했을 때 프롬프트가 따라가지 못한다.

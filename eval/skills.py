@@ -44,10 +44,12 @@ def load():
     for path in sorted(DIR.glob("*.md")):
         meta, body = _parse(path.read_text(encoding="utf-8"))
         name = meta.get("name") or path.stem
+        cloud, device = _sections(body)
         catalog[name] = {
             "when": meta.get("when", ""),
             "needs": [key.strip() for key in meta.get("needs", "").split(",") if key.strip()],
-            "body": body.strip(),
+            "cloud": cloud,
+            "device": device,
         }
     return catalog
 
@@ -79,7 +81,7 @@ def reference_text(catalog, field_hint="", no_submit=False):
         return ""
     parts = [f"◆ {name} — 이럴 때: {skill['when']}"
              + (f" (필요한 값: {', '.join(skill['needs'])})" if skill["needs"] else "")
-             + f"\n{skill['body']}"
+             + f"\n{skill['cloud']}"
              for name, skill in catalog.items()]
     if field_hint:
         parts.append(f"금고 필드: {field_hint}")
@@ -87,6 +89,24 @@ def reference_text(catalog, field_hint="", no_submit=False):
         parts.append("주의: 이번 실행에서는 제출·로그인 버튼을 누르지 마세요. 채우기까지만.")
     return ("절차서 — 아래 상황을 만나면 해당 절차를 그대로 따르세요.\n\n"
             + "\n\n".join(parts))
+
+
+def _sections(body):
+    """본문을 "## 클라우드" / "## 기기" 두 쪽으로 가른다.
+
+    한 파일에 두 쪽을 다 적되, 각자에게는 자기 몫만 준다. 실측: 기기 안 모델이
+    "클라우드 모델: need를 내세요"까지 읽고 혼란스러워했다. 읽는 쪽에 필요 없는
+    지시는 짧은 모델에게 그냥 소음이다.
+    """
+    cloud, device, current = [], [], None
+    for line in body.splitlines():
+        heading = line.strip().lstrip("#").strip()
+        if line.strip().startswith("##"):
+            current = cloud if "클라우드" in heading else device
+            continue
+        if current is not None:
+            current.append(line)
+    return "\n".join(cloud).strip(), "\n".join(device).strip()
 
 
 def _parse(text):
@@ -108,6 +128,5 @@ def handoff_text(name, skill, values):
     컨텍스트에는 들어간다는 뜻이다. 그래서 agent.py가 로그와 이력에서는 이 값을
     가린다 — 터미널 기록이나 다음 스텝 프롬프트로 새어나가지 않게.
     """
-    lines = "\n".join(f"  {key} = {value}" for key, value in values.items())
-    return (f"◆ 지금 할 일: {name}\n{skill['body']}\n\n"
-            f"넣을 값 (이 값을 그대로 type 하세요):\n{lines}")
+    lines = "\n".join(f"  {key} 값 = {value}" for key, value in values.items())
+    return (f"할 일: {skill['device']}\n\n넣을 값:\n{lines}")
