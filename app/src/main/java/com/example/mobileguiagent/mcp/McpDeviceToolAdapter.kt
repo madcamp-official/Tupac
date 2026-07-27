@@ -3,6 +3,12 @@ package com.example.mobileguiagent.mcp
 import android.util.Base64
 import com.example.mobileguiagent.device.BackDeviceTool
 import com.example.mobileguiagent.device.CaptureScreenDeviceTool
+import com.example.mobileguiagent.device.LaunchAppDeviceTool
+import com.example.mobileguiagent.device.ListFieldsDeviceTool
+import com.example.mobileguiagent.device.ListAppsDeviceTool
+import com.example.mobileguiagent.device.OpenScreenDeviceTool
+import com.example.mobileguiagent.device.SystemActionDeviceTool
+import com.example.mobileguiagent.device.SystemTaskDeviceTool
 import com.example.mobileguiagent.device.ScrollDeviceTool
 import com.example.mobileguiagent.device.TypeTextDeviceTool
 import com.example.mobileguiagent.device.DeviceToolCall
@@ -22,6 +28,12 @@ class McpDeviceToolAdapter(
         EXTERNAL_BACK_NAME to BackDeviceTool.NAME,
         EXTERNAL_SCROLL_NAME to ScrollDeviceTool.NAME,
         EXTERNAL_TYPE_TEXT_NAME to TypeTextDeviceTool.NAME,
+        EXTERNAL_OPEN_SCREEN_NAME to OpenScreenDeviceTool.NAME,
+        EXTERNAL_START_TASK_NAME to SystemTaskDeviceTool.NAME,
+        EXTERNAL_SYSTEM_ACTION_NAME to SystemActionDeviceTool.NAME,
+        EXTERNAL_LAUNCH_APP_NAME to LaunchAppDeviceTool.NAME,
+        EXTERNAL_LIST_APPS_NAME to ListAppsDeviceTool.NAME,
+        EXTERNAL_LIST_FIELDS_NAME to ListFieldsDeviceTool.NAME,
     )
 
     /** tools/list에 실을 이 어댑터가 담당하는 모든 tool의 MCP 정의. */
@@ -129,5 +141,11 @@ class McpDeviceToolAdapter(
         const val EXTERNAL_BACK_NAME = "device_back"
         const val EXTERNAL_SCROLL_NAME = "device_scroll"
         const val EXTERNAL_TYPE_TEXT_NAME = "device_type_text"
+        const val EXTERNAL_OPEN_SCREEN_NAME = "device_open_screen"
+        const val EXTERNAL_START_TASK_NAME = "device_start_task"
+        const val EXTERNAL_SYSTEM_ACTION_NAME = "device_system_action"
+        const val EXTERNAL_LAUNCH_APP_NAME = "device_launch_app"
+        const val EXTERNAL_LIST_APPS_NAME = "device_list_apps"
+        const val EXTERNAL_LIST_FIELDS_NAME = "device_list_fields"
     }
 }
