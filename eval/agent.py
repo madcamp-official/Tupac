@@ -48,6 +48,7 @@ MCP_URL = f"http://127.0.0.1:{MCP_PORT}/mcp"
 MAX_PROMPT_NODES = 45
 STALL_LIMIT = 3          # 화면이 이만큼 연속으로 안 바뀌면 중단한다
 STRAY_LIMIT = 2          # 짚어준 단계와 다른 행동이 이만큼 이어지면 중단한다
+SCROLL_LIMIT = 8         # 남은 칸을 찾아 화면을 훑어볼 최대 횟수(아래로 훑고 위로)
 WAIT_SECONDS = 2.0       # wait 행동이 쉬는 시간
 
 
@@ -290,8 +291,26 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
     # 계획은 "무엇을 채울지"만 담는다. "어느 칸인지"는 매 스텝 다시 찾는다 —
     # 노드 번호는 스냅샷마다 새로 매겨져서 미리 박아두면 어긋난다.
     order, want_submit, filled, submitted = [], False, set(), False
-    plan, current, strays = [], None, 0
+    plan, current, strays, scrolls = [], None, 0, 0
+    hunt = "down"            # 남은 칸을 찾아 훑는 방향. 바닥에 닿으면 뒤집는다
     history = []
+
+    def stray(what):
+        """짚어준 줄과 다른 답이 이어지면 멈춘다. 멈춰야 하면 True.
+
+        모델이 계획 밖에서 화면을 헤집게 두지 않는다. 성공했든 실패했든, 형식이
+        틀렸든 모두 "짚어준 것과 다르다"로 똑같이 센다.
+        """
+        nonlocal strays
+        strays += 1
+        if strays < STRAY_LIMIT:
+            return False
+        print(f"{'=' * 60}\n짚어준 단계와 다른 응답이 {strays}번 이어져 중단합니다 ({what}).")
+        if current:
+            print(f"  짚어준 것: {scrub(current['line'], secrets)}")
+        print(f"현재 화면: [{observation['package_name']}] {describe(observation)}")
+        return True
+
     previous_id = None
     pending = None          # 직전 행동의 이력. 화면이 바뀌었는지는 아직 모른다.
     pending_kind = None
@@ -354,8 +373,46 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         started = time.time()
         try:
             if handoff:
+                # 폼이 한 화면보다 길면 아래쪽 칸은 관찰에 아예 없다(실측: 크롬
+                # 배송지 폼에서 "상세주소"가 트리에 없었다). 스크롤해서 보일 때마다
+                # 계획에 더한다. 계획은 이렇게 자란다.
+                for field in assign.plan_fields(observation, secrets, fields):
+                    if field not in order:
+                        order.append(field)
+                # 아직 어느 칸에도 못 놓은 값이 있으면 제출하지 않는다. 덜 채운
+                # 폼을 보내는 건 되돌리기 어렵다 — 로그인 실패로 계정이 잠기거나,
+                # 주소가 빠진 주문이 들어간다.
+                left = [field for field in secrets if field not in order]
                 plan, current, blocked = assign.steps_now(
-                    observation, secrets, fields, order, want_submit, filled, submitted)
+                    observation, secrets, fields, order,
+                    want_submit and not left, filled, submitted)
+
+                # 보이는 칸을 다 채웠는데 아직 못 넣은 값이 남았으면 화면 밖에 칸이
+                # 더 있을 수 있다. 이걸 모델에게 시키지 않는다 — 스크롤은 판단이
+                # 아니라 화면을 넓히는 일이고, 기기 안 모델은 헛스크롤을 반복한다.
+                waiting = [step_["field"] for step_ in plan
+                           if step_["action"] == "type" and step_["state"] == "todo"]
+                if not waiting and left and scrolls < SCROLL_LIMIT:
+                    scrolls += 1
+                    mcp("device_scroll", {"direction": hunt})
+                    time.sleep(1.0)
+                    after = mcp("device_observe", {"max_nodes": 500})
+                    moved = after.get("snapshot_id") != observation["snapshot_id"]
+                    where = "아래로" if hunt == "down" else "위로"
+                    print(f"[{step}] {where} 스크롤 — {', '.join(left)} 칸을 찾습니다"
+                          f" ({'화면 이동' if moved else '끝까지 왔음'})")
+                    previous_id = after.get("snapshot_id")
+                    if moved:
+                        continue
+                    if hunt == "down":
+                        # 아래는 끝까지 봤다. 시작한 자리보다 위에 있는 칸이 남아
+                        # 있을 수 있다(실측: 페이지가 이미 내려간 채로 시작해서
+                        # "받는사람"을 지나쳤다). 방향을 뒤집어 되짚는다.
+                        hunt = "up"
+                        continue
+                    # 위아래 모두 훑었다. 없는 칸을 더 찾아봐야 헛일이다.
+                    scrolls = SCROLL_LIMIT
+
                 # 짚어줄 줄이 없으면 모델에게 묻지 않는다. 기기 안 모델의 일은
                 # 짚어준 줄을 실행하는 것뿐이고, 그 밖의 판단은 여기서 멈춘다.
                 if blocked:
@@ -371,6 +428,9 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
                 if current["action"] == "done":
                     did = ", ".join(order) + (" 입력 후 제출" if submitted else " 입력")
                     print(f"{'=' * 60}\n계획한 단계를 모두 마쳤습니다 ({did}).")
+                    if left:
+                        print(f"→ {', '.join(left)}는 넣을 칸을 못 찾아 비워뒀습니다"
+                              + (" (제출도 하지 않았습니다)" if want_submit else ""))
                     print(f"현재 화면: [{observation['package_name']}] "
                           f"{describe(observation)}")
                     print("→ 결과를 화면에서 확인하세요.")
@@ -387,6 +447,10 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         if action is None:
             print(f"[{step}] 응답을 해석하지 못해 이 스텝을 건너뜁니다: {raw[:120]}")
             history.append(f"step{step}: 형식 오류 → 건너뜀")
+            # 값 입력 구간에서는 이것도 어긋난 것으로 센다. 안 세면 같은 형식
+            # 오류로 남은 스텝을 전부 태운다(실측: 12스텝 연속 같은 응답).
+            if handoff and stray("형식 오류"):
+                return
             continue
 
         # 모델이 넘긴 인자를 로그에 남긴다. 없으면 실패했을 때 무엇을 넘겼는지
@@ -419,13 +483,14 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
                 # 고르게 하면 틀린다(실측). 절차서의 submit 여부는 그대로 따른다.
                 want_submit = bool(catalog[name].get("submit")) and not no_submit
                 order = assign.plan_fields(observation, secrets, fields)
-                filled, submitted = set(), False
-                if not order:
-                    outcome = "실패: 값을 넣을 칸을 화면에서 찾지 못했습니다"
-                else:
-                    handoff = True
-                    outcome = ("성공: " + ", ".join(order) + " 순서로 채웁니다"
-                               + (" (그다음 제출)" if want_submit else ""))
+                filled, submitted, scrolls, hunt = set(), False, 0, "down"
+                # 지금 화면에 맞는 칸이 하나도 없어도 넘긴다. 폼이 아래로 길면
+                # 첫 화면에 아무 칸도 안 보일 수 있고(실측: 크롬 폼을 내린 채로
+                # 시작하면 위쪽 칸이 트리에 없다), 그때는 code가 훑어서 찾는다.
+                handoff = True
+                outcome = ("성공: " + (", ".join(order) + " 순서로 채웁니다"
+                                       if order else "화면을 훑어 칸을 찾습니다")
+                           + (" (그다음 제출)" if want_submit else ""))
             print(f"     결과: {outcome}")
             pending = f"step{step}: need {' '.join(wanted)} → {outcome}"
             pending_kind = "need"
@@ -436,31 +501,28 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
             print(f"{'=' * 60}\n{who} 마무리했습니다. 화면을 확인하세요.")
             return
 
+        # 값 입력 구간에서는 짚어준 단계만 실행한다. 모델의 답은 "그 단계를 할
+        # 차례가 맞다"는 확인으로만 쓰고, 실제로 넣을 값은 code가 들고 있는 것을
+        # 쓴다. 모델의 답을 그대로 실행하면 옮겨 적다 빠뜨린 값이 화면에 들어가고,
+        # 엉뚱한 칸을 짚었을 때 그 칸이 실제로 채워진다.
+        if handoff and current:
+            if (action["action"] != current["action"]
+                    or action.get("node_id") != current.get("node_id")):
+                print(f"     결과: 건너뜀 — 짚어준 것은 {scrub(current['line'], secrets)}")
+                if stray("다른 단계를 지목"):
+                    return
+                history.append(f"step{step}: 계획과 다른 답 → 실행하지 않음")
+                continue
+            action = assign.action_for(current, secrets)
+
         outcome = scrub(execute(action, observation, dry), secrets)
         print(f"     결과: {outcome}")
-        # 계획대로 한 단계를 마쳤으면 다음으로. 어긋난 행동은 진행으로 세지 않으므로
-        # 같은 단계를 다시 보여주게 된다.
-        if handoff and current:
-            matched = (action["action"] == current["action"]
-                       and action.get("node_id") == current.get("node_id"))
-            if matched and outcome.startswith("성공"):
-                if current["action"] == "type":
-                    filled.add(current["field"])
-                elif current["action"] == "tap":
-                    submitted = True
-                strays = 0
-            elif not matched:
-                # 짚어준 줄과 다른 행동을 했다. 성공했든 실패했든 어긋난 것이다
-                # (성공한 것만 세면 "type node_18"처럼 실패하는 엉뚱한 행동이
-                # 무한히 반복된다). 몇 번 이어지면 멈춘다 — 모델이 계획 밖에서
-                # 화면을 헤집게 두지 않는다.
-                strays += 1
-                if strays >= STRAY_LIMIT:
-                    print(f"{'=' * 60}\n짚어준 단계와 다른 행동이 {strays}번 이어져 중단합니다.")
-                    print(f"  짚어준 것: {scrub(current['line'], secrets)}")
-                    print(f"현재 화면: [{observation['package_name']}] "
-                          f"{describe(observation)}")
-                    return
+        if handoff and current and outcome.startswith("성공"):
+            if current["action"] == "type":
+                filled.add(current["field"])
+            elif current["action"] == "tap":
+                submitted = True
+            strays = 0
         # 아직 history에 넣지 않는다. 다음 observe로 화면 변화를 확인한 뒤 붙인다.
         # 이력은 다음 스텝 프롬프트로 들어가고, 클라우드로 되돌아갈 수도 있다.
         # detail·outcome은 이미 scrub을 거쳤지만 한 번 더 확인한다.

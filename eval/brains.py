@@ -208,12 +208,15 @@ def strip_thinking(raw):
     return raw.strip()
 
 
-def parse_action(raw):
+def parse_action(raw, need_text=True):
     """모델 응답에서 행동을 뽑아낸다 (주로 로컬 모델용).
 
     작은 모델에 JSON 형식을 문법으로 강제하면 생각하기 전에 action부터 확정해
     판단 품질이 무너진다(실측). 그래서 형식은 프롬프트로만 유도하고, 자연어로
     답하더라도 여기서 관대하게 해석한다.
+
+    need_text=False 는 값 입력 구간용이다. 그때는 넣을 값을 code가 들고 있어서
+    모델이 값까지 옮겨 적을 필요가 없다.
     """
     # 1순위: "tap node_41" 같은 한 줄 형식. 작은 모델은 JSON 문법(따옴표·중괄호·
     # 쉼표)을 못 지켜 구조가 무너지는 일이 잦아, 가장 쓰기 쉬운 형식을 먼저 본다.
@@ -236,11 +239,16 @@ def parse_action(raw):
             # "type 홍길동" — 예전 형식도 받는다(포커스된 칸에 들어간다).
             head, _, rest = arg.partition(" ")
             if head.startswith("node_"):
-                # "type node_18"처럼 넣을 글자가 없으면 형식 오류로 본다. 예전에는
-                # 예전 형식("type 값")으로 넘어가 "node_18"이라는 글자를 그대로
-                # 칸에 집어넣었다(실측: 아이디 칸에 node_18이 입력됐다).
-                return ({"action": "type", "node_id": head, "text": rest.strip()}
-                        if rest.strip() else None)
+                # "type node_18"처럼 넣을 글자가 없으면 길찾기 중에는 형식 오류로
+                # 본다. 예전에는 예전 형식("type 값")으로 넘어가 "node_18"이라는
+                # 글자를 그대로 칸에 집어넣었다(실측: 아이디 칸에 node_18이 입력됐다).
+                #
+                # 값 입력 구간(need_text=False)은 다르다. 넣을 값은 code가 들고
+                # 있고 모델은 어느 단계인지만 확인해주면 된다. 거기서 글자가 없다고
+                # 버리면 진행이 막힌다(실측: 모델이 "type node_25"까지만 냈다).
+                if rest.strip():
+                    return {"action": "type", "node_id": head, "text": rest.strip()}
+                return None if need_text else {"action": "type", "node_id": head, "text": ""}
             if arg:
                 return {"action": "type", "text": arg}
         elif verb == "open":
@@ -371,15 +379,18 @@ class LocalBrain:
         # 세 번 반복해 넣고 아이디 칸을 건드리지 않았다. 길찾기는 이미 끝났고
         # 여기서 할 일은 받은 값을 칸에 넣는 것뿐이다.
         if focused:
+            # 이력도 뺀다. 진행 상황은 code가 세고 있고, 이 구간에서 모델이 할 일은
+            # 짚어준 한 줄뿐이다. 이력을 보여주면 그걸 베낀다 — 실측: 배송지 폼
+            # 네 번째 칸 차례에 "step2: type node_15 name → 성공"을 그대로
+            # 되풀이했다. 베낄 것이 정답 하나뿐이어야 정답을 베낀다.
             user = (f"{extra}\n\n{screen}\n\n"
-                    f"지금까지:\n" + ("\n".join(history[-self.max_history:]) or "(없음)")
-                    + "\n\n한 줄로만 답하세요. 형태: type node_번호 값 / tap node_번호 "
-                      "/ wait / done\n답:")
+                    "한 줄로만 답하세요. 형태: type node_번호 값 / tap node_번호 "
+                    "/ wait / done\n답:")
             _verbose("프롬프트(local, 값 입력)", user)
             raw = self._ask([{"role": "system", "content": LOCAL_SYSTEM_PROMPT},
                              {"role": "user", "content": user}])
             _verbose("모델 원문(local)", raw)
-            return parse_action(raw), raw
+            return parse_action(raw, need_text=False), raw
 
         # 확실한 설정 화면은 모델에게 묻지 않는다. 물어봤자 못 고른다(obvious_screen
         # 주석의 실측 참고). 첫 스텝에만 적용한다 — 이미 뭔가 하던 중이라면 목표의

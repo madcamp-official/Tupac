@@ -24,6 +24,27 @@ SUBMIT_WORDS = ("로그인", "signin", "login", "확인", "다음", "계속")
 NOT_SUBMIT_WORDS = ("찾기", "가입", "취소", "다른", "간편", "재설정", "도움", "문의", "만들기")
 
 
+# 브라우저로 볼 패키지 조각. 로그인을 웹으로 넘기는 앱이 많아 자주 마주친다.
+BROWSER_MARKERS = ("chrome", "browser", "firefox", "sbrowser", "whale", "opera", "edge")
+
+
+def is_browser_ui(node, observation):
+    """브라우저가 그린 자기 UI(주소창·탭 버튼)인지. 웹 페이지 내용이 아니다.
+
+    크롬 주소창은 editable이라 입력창 목록에 그대로 섞인다. 아이디를 먼저 받고
+    다음 화면에서 비밀번호를 받는 로그인에서는 "비밀번호 아닌 입력창"이 주소창
+    하나뿐이 되어, 아이디가 주소창에 입력된다.
+
+    갈라내는 기준은 view_id다. 브라우저 자기 위젯은 "<패키지>:id/..."를 달고
+    있고(com.android.chrome:id/url_bar), 웹 페이지 칸은 페이지가 정한
+    id("otp-easy-login")거나 아예 없다.
+    """
+    package = observation.get("package_name") or ""
+    if not any(marker in package.lower() for marker in BROWSER_MARKERS):
+        return False
+    return (node.get("view_id") or "").startswith(f"{package}:id/")
+
+
 def label_of(node):
     """그 칸이 무엇인지 알려주는 글자.
 
@@ -80,7 +101,8 @@ def input_targets(observation, wanted, entries):
     칸 구성이 다르면(배송지 폼, 인증번호 화면) 라벨을 본다. 확실한 것만 고르고
     나머지는 건드리지 않는다. 모르는 칸을 채우느니 비워두는 편이 낫다.
     """
-    editables = [node for node in observation.get("nodes", []) if node.get("editable")]
+    editables = [node for node in observation.get("nodes", [])
+                 if node.get("editable") and not is_browser_ui(node, observation)]
     passwords = [node for node in editables if node.get("password")]
     others = [node for node in editables if not node.get("password")]
 
@@ -106,6 +128,8 @@ def submit_button(observation):
     found = []
     for node in observation.get("nodes", []):
         if node.get("editable") or not node.get("clickable"):
+            continue
+        if is_browser_ui(node, observation):
             continue
         label = squash(label_of(node))
         if not label or len(label) > 12:
@@ -146,13 +170,25 @@ def steps_now(observation, values, field_hint, order, want_submit, done, submitt
 
     steps, current, blocked = [], None, None
     for field in order:
+        # 이미 넣은 칸은 화면에서 다시 찾지 않는다. 값을 넣으면 라벨이 값으로
+        # 바뀌어 더는 그 필드로 안 잡히는데(빈 칸의 라벨은 hint에만 있다),
+        # 그걸 "칸이 없음"으로 적으면 끝난 일을 못 한 일처럼 보여주게 된다.
+        if field in done:
+            steps.append({"action": "type", "field": field, "node_id": None,
+                          "line": f"{field} 입력함", "why": "끝남", "state": "done"})
+            continue
         node = found.get(field)
-        line = f"type {node['id']} {values[field]}" if node else f"(화면에 {field} 칸이 없음)"
+        # 답으로 베낄 줄에는 값 대신 필드 이름을 둔다. 값은 옆의 설명으로 함께
+        # 건네되, 그걸 옮겨 적게 하지는 않는다. 실측: "홍길동"·"04524"는 그대로
+        # 베꼈지만 공백이 든 주소에서는 값을 통째로 빠뜨리고 "type node_22"만 냈다.
+        line = f"type {node['id']} {field}" if node else f"(화면에 {field} 칸이 없음)"
         step = {"action": "type", "field": field, "node_id": node["id"] if node else None,
-                "line": line, "why": f"{field} — {label_of(node)[:20] if node else '못 찾음'}",
-                "state": "done" if field in done else "todo"}
+                "line": line,
+                "why": (f"{label_of(node)[:20]} 칸에 \"{values[field]}\" 를 넣습니다"
+                        if node else f"{field} — 못 찾음"),
+                "state": "todo"}
         steps.append(step)
-        if current is None and blocked is None and step["state"] == "todo":
+        if current is None and blocked is None:
             if node:
                 current = step
             else:
@@ -177,3 +213,15 @@ def steps_now(observation, values, field_hint, order, want_submit, done, submitt
     if current is None and blocked is None:
         current = steps[-1]
     return steps, current, blocked
+
+
+def action_for(step, values):
+    """짚어준 단계를 그대로 실행할 행동.
+
+    모델의 답에서 값을 다시 읽지 않는다. 모델은 "이 단계를 할 차례"라는 것만
+    확인해주면 되고, 무엇을 넣을지는 code가 이미 안다. 값을 모델의 답을 거쳐
+    가져오면 옮겨 적다 빠뜨린 만큼 그대로 화면에 들어간다.
+    """
+    if step["action"] == "type":
+        return {"action": "type", "node_id": step["node_id"], "text": values[step["field"]]}
+    return {"action": step["action"], "node_id": step["node_id"]}

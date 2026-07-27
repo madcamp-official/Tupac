@@ -465,6 +465,38 @@ class AgentAccessibilityService : AccessibilityService() {
         )
     }
 
+    /**
+     * 브라우저 주소창에 떠 있는 호스트. 브라우저 화면이 아니거나 못 읽으면 null.
+     *
+     * 로그인을 웹으로 넘기는 앱이 많다. 쿠팡은 앱에서 로그인을 누르면 크롬
+     * 커스텀탭으로 login.coupang.com을 연다. 그때 눈앞의 패키지는
+     * com.android.chrome이라, 앱 이름만 봐서는 어느 계정을 넣어야 하는지 알 수
+     * 없다. 주소창이 그 답을 들고 있다.
+     */
+    fun browserHost(): String? {
+        val root = rootInActiveWindow ?: return null
+        val appPackage = root.packageName?.toString()?.lowercase() ?: return null
+        if (BROWSER_MARKERS.none { marker -> marker in appPackage }) return null
+
+        val bar = findFirstNode(root) { node ->
+            val viewId = node.viewIdResourceName ?: return@findFirstNode false
+            URL_BAR_SUFFIXES.any { suffix -> viewId.endsWith(suffix) }
+        } ?: return null
+        return hostOf(bar.text?.toString().orEmpty())
+    }
+
+    /** 주소창 글자에서 호스트만 남긴다. 주소창은 전체 URL을 보일 때도 있다. */
+    private fun hostOf(shown: String): String? {
+        val host = shown.trim()
+            .substringAfter("://")
+            .substringBefore('/')
+            .substringBefore('?')
+            .substringAfterLast('@')
+            .substringBefore(':')
+            .lowercase()
+        return host.takeIf { it.contains('.') && it.none(Char::isWhitespace) }
+    }
+
     fun dumpTreeToLog(): UiSnapshot? {
         val snapshot = captureSnapshot() ?: return null
         snapshot.nodes.forEach { node ->
@@ -613,6 +645,17 @@ class AgentAccessibilityService : AccessibilityService() {
         private const val MAX_NODES = 1_500
         private const val MAX_DEPTH = 80
         private const val SETTINGS_PACKAGE = "com.android.settings"
+
+        /** 주소창을 가진 앱으로 볼 패키지 조각. */
+        private val BROWSER_MARKERS = listOf(
+            "chrome", "browser", "firefox", "sbrowser", "whale", "opera", "edge", "duckduckgo",
+        )
+
+        /** 브라우저마다 주소창의 id가 다르다. 끝부분으로 알아본다. */
+        private val URL_BAR_SUFFIXES = listOf(
+            ":id/url_bar", ":id/urlbar", ":id/url_view", ":id/toolbar_url",
+            ":id/location_bar_edit_text", ":id/mozac_browser_toolbar_url_view",
+        )
         private const val SNAPSHOT_SETTLE_DELAY_MS = 180L
 
         @Volatile

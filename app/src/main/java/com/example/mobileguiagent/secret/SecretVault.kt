@@ -90,6 +90,24 @@ object SecretVault {
         return write(context, accountKey(service, field), value)
     }
 
+    /**
+     * 주소창의 호스트가 어느 앱의 계정인지. 확실하지 않으면 null.
+     *
+     * login.coupang.com → "coupang" → com.coupang.mobile 처럼, 도메인의 알맹이가
+     * 등록해둔 패키지 이름 안에 들어 있는지 본다.
+     *
+     * 후보가 여럿이면 고르지 않는다. 한 사이트의 자격증명을 다른 사이트에 넣는
+     * 일은 되돌릴 수 없다. 못 고르면 등록이 안 된 것으로 다루는 편이 낫다.
+     */
+    fun serviceForHost(context: Context, host: String): String? {
+        val labels = host.lowercase().split('.')
+            .filter { label -> label.length >= 3 && label !in DOMAIN_NOISE }
+        if (labels.isEmpty()) return null
+        return storedServices(context)
+            .filter { service -> labels.any { label -> service.lowercase().contains(label) } }
+            .singleOrNull()
+    }
+
     fun removeService(context: Context, service: String) {
         val editor = prefs(context).edit()
         ACCOUNT_FIELDS.keys.forEach { field -> editor.remove(accountKey(service, field)) }
@@ -188,6 +206,16 @@ object SecretVault {
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private const val PROFILE_PREFIX = "profile:"
     private const val ACCOUNT_PREFIX = "account:"
+
+    /**
+     * 도메인에서 앱을 가리키지 않는 조각. 이걸 걸러야 알맹이만 남는다.
+     * login.coupang.com에서 "login"이 남으면 로그인 화면을 가진 아무 앱에나 걸린다.
+     */
+    private val DOMAIN_NOISE = setOf(
+        "www", "www2", "web", "mobile", "app", "api", "new",
+        "com", "net", "org", "co", "kr", "io", "gov",
+        "login", "signin", "auth", "account", "accounts", "member", "secure", "sso",
+    )
     private const val IV_BYTES = 12
     private const val TAG_BITS = 128
     private const val TAG = "SecretVault"

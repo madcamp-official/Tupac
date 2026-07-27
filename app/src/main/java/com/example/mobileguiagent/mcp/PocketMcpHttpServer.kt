@@ -479,6 +479,25 @@ class PocketMcpHttpServer(
      * 값이 나가는 만큼 조건은 그대로 지킨다. 계정 필드는 지금 화면에 떠 있는 앱
      * 것만 준다. 부르는 쪽이 다른 앱 계정을 지목할 수 없다.
      */
+    /** 지금 화면의 계정 주인. shown은 못 찾았을 때 사람에게 보여줄 이름이다. */
+    private class AccountOwner(val service: String?, val shown: String)
+
+    /**
+     * 계정을 어느 앱 것으로 볼지 정한다. 반드시 메인 스레드에서 부른다.
+     *
+     * 앱이 제 화면에서 직접 로그인받으면 그 앱이다. 그런데 로그인을 웹으로 넘기는
+     * 앱이 많다 — 쿠팡은 크롬 커스텀탭으로 login.coupang.com을 연다. 눈앞의
+     * 패키지만 보면 com.android.chrome이라, 쿠팡 계정을 등록해둬도 찾지 못한다.
+     * 그래서 브라우저일 때는 주소창을 읽어 등록해둔 앱과 맞춰본다.
+     */
+    private fun accountOwner(service: AgentAccessibilityService): AccountOwner {
+        service.browserHost()?.let { host ->
+            return AccountOwner(SecretVault.serviceForHost(service, host), host)
+        }
+        val appPackage = service.rootInActiveWindow?.packageName?.toString()
+        return AccountOwner(appPackage, appPackage ?: "알 수 없는 화면")
+    }
+
     private fun getField(arguments: JSONObject): JSONObject {
         val field = arguments.optString("field")
         if (!SecretVault.FIELDS.containsKey(field)) {
@@ -494,13 +513,13 @@ class PocketMcpHttpServer(
         val app = AtomicReference<String?>(null)
         val latch = CountDownLatch(1)
         Handler(Looper.getMainLooper()).post {
-            val currentApp = service.rootInActiveWindow?.packageName?.toString()
-            app.set(currentApp)
+            val owner = accountOwner(service)
+            app.set(owner.shown)
             value.set(
                 when {
                     !SecretVault.isAccountField(field) -> SecretVault.reveal(service, field)
-                    currentApp == null -> null
-                    else -> SecretVault.reveal(service, field, currentApp)
+                    owner.service == null -> null
+                    else -> SecretVault.reveal(service, field, owner.service)
                 },
             )
             latch.countDown()
@@ -594,16 +613,16 @@ class PocketMcpHttpServer(
         val missing = AtomicReference<String?>(null)
         val latch = CountDownLatch(1)
         Handler(Looper.getMainLooper()).post {
-            val currentApp = service.rootInActiveWindow?.packageName?.toString()
+            val owner = accountOwner(service)
             val value = when {
                 !SecretVault.isAccountField(field) -> SecretVault.reveal(service, field)
-                currentApp == null -> null
-                else -> SecretVault.reveal(service, field, currentApp)
+                owner.service == null -> null
+                else -> SecretVault.reveal(service, field, owner.service)
             }
             if (value == null) {
                 missing.set(
                     if (SecretVault.isAccountField(field)) {
-                        "이 앱($currentApp)의 $field 이(가) 등록돼 있지 않습니다. " +
+                        "이 앱(${owner.shown})의 $field 이(가) 등록돼 있지 않습니다. " +
                             "앱의 \"내 정보\" 화면에서 이 앱 계정을 먼저 등록하세요."
                     } else {
                         "$field 값이 저장돼 있지 않습니다. 앱 화면에서 먼저 등록하세요."
