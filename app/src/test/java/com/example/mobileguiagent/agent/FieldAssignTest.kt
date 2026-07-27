@@ -134,7 +134,7 @@ class FieldAssignTest {
     }
 
     @Test
-    fun `짚어주는 줄에는 값이 아니라 필드 이름이 들어간다`() {
+    fun `짚어주는 줄은 fill 형식이고 값이 들어간다`() {
         val plan = FieldAssign.stepsNow(
             kakaoLogin, "com.kakao.talk",
             values = mapOf("username" to "minsu", "password" to "pw1234"),
@@ -142,8 +142,9 @@ class FieldAssignTest {
             wantSubmit = true, filled = emptySet(), submitted = false,
         )
         assertEquals(
-            "공백이 든 값은 모델이 옮겨 적다 빠뜨린다. 값은 why로만 건넨다",
-            "type node_12 username",
+            "화면 표기가 \"node_12 [type] 라벨\"이라 type 형식은 앞부분이 겹친다. " +
+                "실측: 카카오톡 로그인에서 type 0/10, fill 10/10",
+            "fill node_12 minsu",
             plan.current?.line,
         )
         assertNull("막힐 이유가 없다", plan.blocked)
@@ -159,8 +160,14 @@ class FieldAssignTest {
         )
         assertEquals(
             "값을 넣으면 라벨이 값으로 바뀐다. 다시 찾으면 '칸이 없음'이 된다",
-            "type node_15 password",
+            "fill node_15 pw1234",
             plan.current?.line,
+        )
+        assertEquals(
+            "끝난 단계도 값과 함께 보여준다. 값 예시가 없으면 모델이 값을 못 쓴다 " +
+                "(실측: 예시 0개면 0/20, 3개면 20/20)",
+            "fill node_12 minsu",
+            plan.steps.first { it.done }.line,
         )
     }
 

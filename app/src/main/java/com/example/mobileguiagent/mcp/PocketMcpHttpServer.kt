@@ -3,6 +3,7 @@ package com.example.mobileguiagent.mcp
 import android.os.Handler
 import android.os.Looper
 import com.example.mobileguiagent.accessibility.AgentAccessibilityService
+import com.example.mobileguiagent.agent.FilledSecrets
 import com.example.mobileguiagent.agent.ScreenPrivacy
 import com.example.mobileguiagent.device.DeviceToolRegistry
 import com.example.mobileguiagent.model.NodeActionResult
@@ -975,8 +976,11 @@ class PocketMcpHttpServer(
         // 아무도 없다. 자르는 것은 라벨뿐이고 노드 구조와 플래그는 그대로 둔다.
         // 무엇을 누를지는 알아야 하고, 그 값이 무엇인지는 알 필요가 없다.
         val nodeCount = meaningful.size
+        // 두 겹이다. ScreenPrivacy는 형식이 뚜렷한 것(주민번호, 카드번호)을 잡고,
+        // FilledSecrets는 우리가 방금 넣어서 알고 있는 값을 잡는다. 아이디처럼
+        // 아무 형식도 아닌 값은 뒤엣것만이 알아본다.
         fun clean(value: String?): Any =
-            value?.let { ScreenPrivacy.redact(it, snapshot.packageName, nodeCount) }
+            value?.let { FilledSecrets.mask(ScreenPrivacy.redact(it, snapshot.packageName, nodeCount)) }
                 ?: JSONObject.NULL
 
         val nodes = JSONArray()

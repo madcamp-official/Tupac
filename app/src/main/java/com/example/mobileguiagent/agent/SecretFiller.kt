@@ -85,6 +85,8 @@ object SecretFiller {
             )
         }
 
+        // 이전 채우기의 기억을 버린다. 평문 값을 필요한 창 밖까지 들고 있지 않는다.
+        FilledSecrets.clear()
         return runPlan(service, values, submit, missing)
     }
 
@@ -137,7 +139,7 @@ object SecretFiller {
                 ?: return Outcome.Failed("NODE_GONE", "짚어둔 칸이 화면에서 사라졌습니다.")
 
             when (step.action) {
-                "type" -> {
+                "fill" -> {
                     val field = step.field ?: continue
                     // 값은 여기서만 꺼내 쓴다. 로그에도 결과 메시지에도 싣지 않는다.
                     val ok = onMainThread {
@@ -150,6 +152,9 @@ object SecretFiller {
                         )
                     }
                     filled += field
+                    // 넣은 값을 기억해둔다. 이 값이 화면에 남아 다음 관찰에
+                    // 실려 나가는 것을 막으려면, 무엇을 넣었는지 알아야 한다.
+                    FilledSecrets.remember(field, values.getValue(field))
                 }
 
                 "tap" -> {

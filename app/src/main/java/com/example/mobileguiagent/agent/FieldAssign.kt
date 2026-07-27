@@ -232,7 +232,12 @@ object FieldAssign {
             // 바뀌어 더는 그 필드로 안 잡히는데(빈 칸의 라벨은 hint에만 있다),
             // 그걸 "칸이 없음"으로 적으면 끝난 일을 못 한 일처럼 보여주게 된다.
             if (field in filled) {
-                steps += Step("type", field, null, "$field 입력함", "끝남", done = true)
+                // 끝난 단계도 값과 함께 보여준다. 기기 안 모델은 곁에 있는 예시를
+                // 베껴 답하는데, 예시에 값이 없으면 값을 어떻게 쓰는지 모른다.
+                // 실측(공백 든 주소, 20번씩): 값 예시가 0개면 0/20, 3개면 20/20.
+                steps += Step("fill", field, found[field]?.id,
+                              "fill ${found[field]?.id ?: "-"} ${values[field]}",
+                              "끝남", done = true)
                 continue
             }
             val node = found[field]
@@ -240,15 +245,16 @@ object FieldAssign {
             // 건네되, 그걸 옮겨 적게 하지는 않는다. 실측: "홍길동"·"04524"는 그대로
             // 베꼈지만 공백이 든 주소에서는 값을 통째로 빠뜨리고 "type node_22"만 냈다.
             val step = Step(
-                action = "type",
+                action = "fill",
                 field = field,
                 nodeId = node?.id,
-                line = if (node != null) "type ${node.id} $field" else "(화면에 $field 칸이 없음)",
-                why = if (node != null) {
-                    "${labelOf(node).take(20)} 칸에 \"${values[field]}\" 를 넣습니다"
-                } else {
-                    "$field — 못 찾음"
-                },
+                // "type"이 아니라 "fill"이다. 화면 표기가 "node_12 [type] 라벨"이라
+                // 답 형식이 "type node_12 값"이면 앞부분이 겹친다. 그러면 모델이
+                // "type node_12"까지만 쓰고 화면 줄을 완성했다고 여긴다.
+                // 실측: 카카오톡 로그인에서 type 형식은 0/10, fill 형식은 10/10.
+                line = if (node != null) "fill ${node.id} ${values[field]}"
+                       else "(화면에 $field 칸이 없음)",
+                why = if (node != null) "${labelOf(node).take(20)} 칸" else "$field — 못 찾음",
                 done = false,
             )
             steps += step
