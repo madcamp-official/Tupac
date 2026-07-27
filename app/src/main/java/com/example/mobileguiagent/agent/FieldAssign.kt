@@ -66,8 +66,23 @@ object FieldAssign {
      * 빈 입력창은 text가 비어 있고 안내 문구가 hint에만 있는 경우가 있다(크롬의
      * 웹 폼이 그렇다). 셋 다 봐야 어느 앱에서든 칸을 알아본다.
      */
-    fun labelOf(node: UiNode): String =
-        (node.text ?: node.contentDescription ?: node.hint).orEmpty().trim()
+    fun labelOf(node: UiNode): String {
+        // 빈 문자열도 없는 것으로 본다. 크롬의 웹 폼은 비어 있는 칸의 text를
+        // null이 아니라 ""로 준다. ?: 로만 넘기면 ""가 라벨이 되어 어느 필드에도
+        // 안 걸리고, 그 칸은 "화면에 없음"으로 보고된다(실측: 배송지 폼 5칸을
+        // 전부 놓쳤다).
+        val text = node.text?.takeIf { it.isNotBlank() }
+        val description = node.contentDescription?.takeIf { it.isNotBlank() }
+        val hint = node.hint?.takeIf { it.isNotBlank() }
+        // 입력창은 hint를 먼저 본다. 빈 칸이면 안내 문구가 hint에만 있고, 이미
+        // 값이 든 칸이면 text에 라벨이 아니라 그 값이 들어 있다. text를 먼저 보면
+        // "받는사람" 칸에 남아 있던 "홍길동"이 라벨로 잡힌다.
+        return if (node.editable) {
+            (hint ?: description ?: text).orEmpty().trim()
+        } else {
+            (text ?: description ?: hint).orEmpty().trim()
+        }
+    }
 
     /** 공백을 지우고 소문자로. "이메일 주소"와 "이메일주소"를 같게 보려는 것. */
     private fun squash(text: String) = text.lowercase().replace(Regex("\\s+"), "")

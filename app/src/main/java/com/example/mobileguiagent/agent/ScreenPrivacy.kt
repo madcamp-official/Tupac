@@ -88,7 +88,8 @@ object ScreenPrivacy {
     private const val DIALOG_NODES = 6
 
     fun labelOf(node: UiNode): String =
-        (node.text ?: node.contentDescription ?: node.hint).orEmpty().trim()
+        listOfNotNull(node.text, node.contentDescription, node.hint)
+            .firstOrNull { it.isNotBlank() }.orEmpty().trim()
 
     /**
      * 알아볼 수 있는 개인정보를 자리표시자로 바꾼다.

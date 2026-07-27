@@ -53,12 +53,14 @@ class FieldAssignTest {
     )
 
     // 크롬 웹 폼. 라벨이 hint에만 있고, 주소창이 editable로 섞여 있다.
+    // text가 null이 아니라 ""다. 실기기 크롬이 그렇게 준다 — 이걸 null로 만들어
+    // 두는 바람에 배송지 폼 5칸을 전부 놓치는 버그를 못 잡았다.
     private val chromeForm = listOf(
-        node("node_15", hint = "받는사람", viewId = "a", editable = true),
-        node("node_17", hint = "연락처", viewId = "b", editable = true),
-        node("node_20", hint = "우편번호", viewId = "c", editable = true),
-        node("node_22", hint = "주소", viewId = "d", editable = true),
-        node("node_24", hint = "상세주소", viewId = "e", editable = true),
+        node("node_15", text = "", hint = "받는사람", viewId = "a", editable = true),
+        node("node_17", text = "", hint = "연락처", viewId = "b", editable = true),
+        node("node_20", text = "", hint = "우편번호", viewId = "c", editable = true),
+        node("node_22", text = "", hint = "주소", viewId = "d", editable = true),
+        node("node_24", text = "", hint = "상세주소", viewId = "e", editable = true),
         node("node_37", text = "localhost:8090",
              viewId = "com.android.chrome:id/url_bar", editable = true),
         node("node_90", text = "저장", clickable = true),
@@ -181,6 +183,19 @@ class FieldAssignTest {
             plan.blocked,
         )
         assertNull("막혔으면 짚어줄 줄이 없다", plan.current)
+    }
+
+    @Test
+    fun `값이 든 칸도 라벨은 hint로 읽는다`() {
+        // 한 칸을 채우면 text에 라벨이 아니라 그 값이 들어간다. text를 먼저 보면
+        // "홍길동"이 라벨이 되어 어느 필드에도 안 걸린다.
+        val filledIn = listOf(node("node_15", text = "홍길동", hint = "받는사람",
+                                   viewId = "a", editable = true))
+        assertEquals(
+            "채운 칸을 다시 찾을 수 있어야 화면이 바뀌어도 계획이 이어진다",
+            listOf("node_15" to "name"),
+            assign(filledIn, "com.android.chrome", setOf("name")),
+        )
     }
 
     @Test
