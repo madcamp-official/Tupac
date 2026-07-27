@@ -45,6 +45,7 @@ class DeviceToolRegistry(
         TypeTextDeviceTool,
         OpenScreenDeviceTool,
         SystemTaskDeviceTool,
+        SystemActionDeviceTool,
         LaunchAppDeviceTool,
         ListAppsDeviceTool,
         ListFieldsDeviceTool,

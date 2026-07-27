@@ -7,6 +7,7 @@ import com.example.mobileguiagent.device.LaunchAppDeviceTool
 import com.example.mobileguiagent.device.ListFieldsDeviceTool
 import com.example.mobileguiagent.device.ListAppsDeviceTool
 import com.example.mobileguiagent.device.OpenScreenDeviceTool
+import com.example.mobileguiagent.device.SystemActionDeviceTool
 import com.example.mobileguiagent.device.SystemTaskDeviceTool
 import com.example.mobileguiagent.device.ScrollDeviceTool
 import com.example.mobileguiagent.device.TypeTextDeviceTool
@@ -29,6 +30,7 @@ class McpDeviceToolAdapter(
         EXTERNAL_TYPE_TEXT_NAME to TypeTextDeviceTool.NAME,
         EXTERNAL_OPEN_SCREEN_NAME to OpenScreenDeviceTool.NAME,
         EXTERNAL_START_TASK_NAME to SystemTaskDeviceTool.NAME,
+        EXTERNAL_SYSTEM_ACTION_NAME to SystemActionDeviceTool.NAME,
         EXTERNAL_LAUNCH_APP_NAME to LaunchAppDeviceTool.NAME,
         EXTERNAL_LIST_APPS_NAME to ListAppsDeviceTool.NAME,
         EXTERNAL_LIST_FIELDS_NAME to ListFieldsDeviceTool.NAME,
@@ -141,6 +143,7 @@ class McpDeviceToolAdapter(
         const val EXTERNAL_TYPE_TEXT_NAME = "device_type_text"
         const val EXTERNAL_OPEN_SCREEN_NAME = "device_open_screen"
         const val EXTERNAL_START_TASK_NAME = "device_start_task"
+        const val EXTERNAL_SYSTEM_ACTION_NAME = "device_system_action"
         const val EXTERNAL_LAUNCH_APP_NAME = "device_launch_app"
         const val EXTERNAL_LIST_APPS_NAME = "device_list_apps"
         const val EXTERNAL_LIST_FIELDS_NAME = "device_list_fields"

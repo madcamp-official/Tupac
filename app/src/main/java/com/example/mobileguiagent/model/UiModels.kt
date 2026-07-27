@@ -27,6 +27,21 @@ data class UiNode(
     // 가장 강한 신호다. 값 자체는 접근성 트리에도 안 나오지만, 이런 칸이 있는
     // 화면이면 주변에 아이디·주민번호 같은 것이 함께 있다고 봐야 한다.
     val password: Boolean = false,
+    // 슬라이더·진행바라면 그 값의 범위. 밝기와 음량이 대표적이다.
+    val range: UiRange? = null,
+)
+
+/**
+ * 슬라이더가 가질 수 있는 값의 범위와 지금 값.
+ *
+ * 이게 없으면 슬라이더는 조작할 방법이 아예 없다. tap은 좌표 한 점을 누르는
+ * 것이라 "절반으로" 같은 걸 맞출 수가 없고, 접근성 트리의 라벨에도 값이 안
+ * 나오는 경우가 많다. 범위를 알면 ACTION_SET_PROGRESS로 정확한 값을 넣는다.
+ */
+data class UiRange(
+    val min: Float,
+    val max: Float,
+    val current: Float,
 )
 
 data class UiSnapshot(
@@ -46,6 +61,11 @@ data class UiSnapshot(
                 append(node.viewId.orEmpty())
                 append('|')
                 append(node.checked)
+                append('|')
+                // 슬라이더를 옮기면 화면이 바뀐 것으로 쳐야 한다. 지문에 안 넣으면
+                // 밝기를 성공적으로 내려도 "화면 그대로"로 기록되고, 그게 세 번
+                // 이어지면 에이전트가 정체로 보고 멈춘다.
+                append(node.range?.current)
                 append('|')
                 append(node.bounds.flattenToString())
             }

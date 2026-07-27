@@ -112,6 +112,7 @@ def mcp_call(method, params):
 SHORTCUT_SOURCES = (
     ("open에 쓸 수 있는 screen 값", "device_open_screen", "screen"),
     ("task에 쓸 수 있는 값", "device_start_task", "task"),
+    ("system에 쓸 수 있는 key 값", "device_system_action", "key"),
 )
 
 
@@ -147,6 +148,25 @@ def shortcut_hint():
     return "\n\n".join(blocks)
 
 
+def number(value):
+    """슬라이더 값을 사람이 읽는 형태로. 0~1.0 범위든 0~255든 군더더기 없이."""
+    return f"{float(value):g}"
+
+
+def percent_of(span):
+    """슬라이더의 지금 값이 몇 퍼센트인지."""
+    width = float(span["max"]) - float(span["min"])
+    if width <= 0:
+        return 0
+    return round((float(span["current"]) - float(span["min"])) * 100 / width)
+
+
+def raw_of(span, percent):
+    """퍼센트를 그 슬라이더가 쓰는 실제 값으로 되돌린다."""
+    width = float(span["max"]) - float(span["min"])
+    return float(span["min"]) + width * max(0.0, min(100.0, percent)) / 100
+
+
 def render_screen(observation, all_nodes, redact=False):
     """화면을 모델에게 보여줄 간결한 텍스트로. JSON보다 토큰이 훨씬 적다.
 
@@ -163,9 +183,21 @@ def render_screen(observation, all_nodes, redact=False):
                  or node.get("hint") or "").replace("\n", " ")
         if redact:
             label = privacy.redact(label, observation)
-        if not label and not all_nodes:
+        span = node.get("range")
+        if not label and not span and not all_nodes:
             continue                      # 라벨 없는 노드는 모델이 고를 근거가 없다
-        if node["editable"]:
+        if span:
+            # 슬라이더는 tap으로 값을 고를 수 없다. 지금 값을 함께 보여줘야
+            # 모델이 "절반으로"를 숫자로 옮길 수 있다. 밝기 슬라이더는 라벨이
+            # 아예 없는 경우가 많아, 이 표시가 유일한 단서이기도 하다.
+            #
+            # 슬라이더가 쓰는 실제 눈금은 감추고 퍼센트로만 보여준다. 눈금은
+            # 위젯 마음대로다 — 실측으로 삼성 설정 앱의 밝기 슬라이더는
+            # 0~267386880(255의 2^20배)을 쓴다. 그대로 내보내면 모델이 보는 화면이
+            # "set 0~2.67387e+08, 지금 2.00278e+08"이 되고, 바로 옆 라벨은 "191"이라
+            # 두 숫자가 서로 아무 관계 없어 보인다. 퍼센트는 어느 위젯이든 같다.
+            flag = f"set 0~100, 지금 {percent_of(span)}"
+        elif node["editable"]:
             # 비밀번호 칸을 표시해줘야 모델이 절차서의 "비밀번호가 아닌 칸이
             # 아이디"라는 구분을 화면에서 해낼 수 있다.
             flag = "type,비밀번호" if node.get("password") else "type"
@@ -223,6 +255,44 @@ def execute(action, observation, dry):
                     else f"실패: {result.get('message') or result.get('error')}")
         result = mcp("device_type_text", {"text": action.get("text", "")})
         return "성공: 입력함" if result.get("success") else f"실패: {result.get('error')}"
+
+    if kind == "set":
+        node_id = action.get("node_id", "")
+        node = next((n for n in observation["nodes"] if n["id"] == node_id), None)
+        if node is None:
+            return f"실패: {node_id}는 화면에 없는 노드"
+        if not node.get("range"):
+            # 화면 표시에 범위가 없는 노드를 set으로 고른 것이다. 폰까지 갈 것도
+            # 없이 여기서 돌려준다 — 무엇을 잘못 골랐는지 이력에 남아야 고친다.
+            return f"실패: {node_id}는 슬라이더가 아닙니다. tap으로 누르세요"
+        try:
+            percent = float(action.get("value"))
+        except (TypeError, ValueError):
+            return f"실패: set에는 숫자 value가 필요합니다. 받은 값: {action.get('value')}"
+        if not 0 <= percent <= 100:
+            return f"실패: set은 0~100 퍼센트로 주세요. 받은 값: {number(percent)}"
+        # 모델은 퍼센트로 답하고, 그 슬라이더가 쓰는 눈금으로 되돌리는 건 여기서 한다.
+        result = mcp("device_set_progress", {
+            "snapshot_id": observation["snapshot_id"],
+            "node_id": node_id,
+            "value": raw_of(node["range"], percent),
+        })
+        if result.get("success"):
+            return f"성공: {result.get('message')}"
+        # tap과 같은 이유로 "실패"라고 적지 않는다. 슬라이더 화면은 특히 자주
+        # 어긋난다 — 자동 밝기가 켜져 있으면 판단하는 사이에도 값이 움직이고,
+        # 값이 지문에 들어 있어서 스냅샷이 바로 낡는다.
+        if result.get("error") in ("SCREEN_CHANGED", "STALE_SNAPSHOT"):
+            return "무효: 판단하는 사이 화면이 바뀌어 취소됨. 판단 자체는 문제없음"
+        return f"실패: {result.get('message') or result.get('error')}"
+
+    if kind == "system":
+        key = action.get("key", "")
+        result = mcp("device_system_action", {"key": key})
+        if result.get("success"):
+            return f"성공: {result.get('message')}"
+        # 잠금화면처럼 시스템이 거부하는 상황이 있다. 이유를 그대로 전달한다.
+        return f"실패: {result.get('message') or result.get('error')}"
 
     if kind == "wait":
         # 화면 전환이나 서버 응답을 기다리는 동안 아무것도 하지 않는다.
@@ -456,7 +526,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         # 모델이 넘긴 인자를 로그에 남긴다. 없으면 실패했을 때 무엇을 넘겼는지
         # 알 수가 없다(실측: task만 찍히고 web_search인지 timer인지 안 보였다).
         detail = " ".join(str(action.get(key)) for key in
-                          ("node_id", "screen", "task", "value", "app", "field",
+                          ("node_id", "screen", "task", "key", "value", "app", "field",
                            "direction", "text", "mark")
                           if action.get(key))
         detail = scrub(detail, secrets)

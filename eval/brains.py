@@ -41,8 +41,8 @@ GEMINI_URL = os.environ.get("GEMINI_URL") or (
 
 MAX_QUOTA_WAIT = 90          # 429 재시도에 쓸 누적 대기 상한(초)
 
-ACTIONS = ("tap", "scroll", "type", "back", "open", "task", "launch",
-           "list_apps", "fill", "need", "wait", "done")
+ACTIONS = ("tap", "scroll", "type", "back", "open", "task", "launch", "system",
+           "set", "list_apps", "fill", "need", "wait", "done")
 DIRECTIONS = ("up", "down", "left", "right")
 
 
@@ -96,7 +96,8 @@ def shortcut_entries(shortcuts):
     entries = []
     for block in shortcuts.split("\n\n"):
         head, _, body = block.partition(":\n")
-        kind = "open" if "screen" in head else "task" if "task" in head else None
+        kind = ("open" if "screen" in head else "task" if "task" in head
+                else "system" if "key" in head else None)
         if not kind:
             continue
         starts = list(re.finditer(r"(?:^|,\s*)([a-z_][a-z0-9_]*)\(", body))
@@ -214,6 +215,8 @@ def compact_shortcuts(shortcuts):
             lines.append(f"open 화면 — 쓸 수 있는 화면: {keys}")
         elif "task" in head:
             lines.append(f"task 작업 값 — 쓸 수 있는 작업: {keys}")
+        elif "key" in head:
+            lines.append(f"system 동작 — 쓸 수 있는 동작: {keys}")
     if lines:
         lines.append("launch 앱이름")
     return "\n".join(lines)
@@ -268,7 +271,8 @@ def parse_action(raw, need_text=True):
     raw = strip_thinking(raw)
     first_line = raw.strip().splitlines()[0].strip() if raw.strip() else ""
     match = re.match(
-        r"^[\s\-*`]*(tap|scroll|type|back|open|task|launch|fill|need|wait|done)\b[:\s]*(.*)$",
+        r"^[\s\-*`]*(tap|scroll|type|back|open|task|launch|system|set|fill|need|wait|done)"
+        r"\b[:\s]*(.*)$",
         first_line, re.IGNORECASE)
     if match:
         verb, arg = match.group(1).lower(), match.group(2).strip().strip('"\'`')
@@ -310,6 +314,23 @@ def parse_action(raw, need_text=True):
         elif verb == "launch":
             if arg:
                 return {"action": "launch", "app": arg}
+        elif verb == "system":
+            # "system quick_settings" — 시스템 버튼 하나를 누른다.
+            if arg:
+                return {"action": "system", "key": arg.split()[0]}
+        elif verb == "set":
+            # "set node_12 60" — 슬라이더를 60%로.
+            #
+            # 숫자가 없으면 형식 오류로 확정하고 None을 돌려준다. 아래의 관대한
+            # 해석으로 흘려보내면 "set node_12"가 tap node_12가 되어버린다 —
+            # 슬라이더를 누르면 누른 좌표의 값으로 튀므로, 의도와 무관한 값이
+            # 들어간다. "type node_18"을 거절하는 것과 같은 이유다.
+            parts = arg.split()
+            if len(parts) >= 2 and parts[0].startswith("node_"):
+                found = re.search(r"-?\d+(?:\.\d+)?", parts[1])
+                if found:
+                    return {"action": "set", "node_id": parts[0], "value": found.group()}
+            return None
         elif verb == "need":
             # "need username password" — 값이 필요하다는 신호. 값은 code가 꺼낸다.
             wanted = [word for word in arg.replace(",", " ").split() if word]
@@ -398,6 +419,11 @@ class LocalBrain:
         if any(n["editable"] for n in observation["nodes"]):
             options.insert(1, "type 넣을글자")
             options.insert(2, "fill node_번호 필드이름")
+        # 슬라이더가 있을 때만 노출한다. 없는 화면에 예시로 두면 작은 모델이
+        # 그대로 베낀다(고정 예시를 베끼는 문제는 이 함수 주석 참고).
+        slider = next((n["id"] for n in observation["nodes"] if n.get("range")), None)
+        if slider:
+            options.insert(1, f"set {slider} 값")
         menu = compact_shortcuts(shortcuts)
         if menu:
             options = menu.splitlines() + options
@@ -454,7 +480,7 @@ class LocalBrain:
                 # 결과다. 안 알려주면 루프가 계속 돈다 — 손전등은 켜도 화면이
                 # 그대로라, 모델이 홈 화면 아이콘을 눌러대다 스텝을 다 썼다.
                 found["final"] = True
-                value = f" {found['value']}" if found.get("value") else ""
+                value = f" {found['value']}" if found.get("value") else ""  
                 return found, f"(규칙) task {found['task']}{value}"
 
         recent = "\n".join(history[-self.max_history:]) or "(아직 없음)"
@@ -499,6 +525,7 @@ CLOUD_RULES = """행동은 다음뿐입니다. 위쪽 네 개를 먼저 고려�
 - task      : task 필수. 전화·문자·검색·지도·알람 같은 기본 기능을 바로 실행합니다.
               값이 필요한 작업은 value에, 문자 내용이나 알람 이름은 text에 씁니다.
 - launch    : app 필수. 설치된 앱을 이름으로 실행합니다(예: app="카카오톡").
+- system    : key 필수. 시스템 버튼을 누릅니다(빠른 설정, 홈, 알림창, 최근 앱...).
 - list_apps : 어떤 앱이 깔려 있는지 모를 때. app에 검색어를 넣으면 걸러 봅니다.
 - need   : fields 필수. 개인정보를 입력해야 하는 화면에 도착했을 때, 직접 채우지
              말고 필요한 값의 이름만 넘깁니다(예: fields=["username","password"]).
@@ -508,6 +535,7 @@ CLOUD_RULES = """행동은 다음뿐입니다. 위쪽 네 개를 먼저 고려�
 - wait   : 화면 전환이나 처리 결과를 기다립니다.
 - tap    : node_id 필수. 화면에 실제로 있는 번호만 씁니다.
 - scroll : direction 필수(up/down/left/right).
+- set    : node_id와 value 필수. 슬라이더를 그 퍼센트로 옮깁니다(0~100).
 - type   : text 필수. node_id를 함께 주면 그 칸에 넣습니다(권장).
 - back   : 잘못 들어왔거나 막다른 화면일 때 되돌아갑니다.
 - done   : 목표 화면에 도착했을 때. 마지막 한 번만.
@@ -525,7 +553,15 @@ CLOUD_RULES = """행동은 다음뿐입니다. 위쪽 네 개를 먼저 고려�
   대화상자가 먼저 뜹니다. 화면에 앱 이름들과 "한 번만"/"항상"이 같이 보이면
   그 화면입니다. 앱 이름을 tap 하고 이어서 "한 번만"을 tap 하세요.
   같은 task를 다시 실행해도 이 대화상자가 또 뜰 뿐입니다.
+- 와이파이·블루투스·손전등·화면 회전·모바일 데이터처럼 켜고 끄는 토글은
+  system=quick_settings로 패널을 내리는 것이 가장 짧습니다. 설정 앱을 열어
+  찾아가도 되지만 스텝이 더 듭니다. 패널이 열린 뒤 해당 토글을 tap 하세요.
+- 화면 어디에도 길이 안 보이면 system=home으로 홈에서 다시 시작하세요.
+  back을 반복하는 것보다 확실합니다.
 - 각 줄의 [tap]/[type]/[scroll]은 그 노드에 할 수 있는 행동입니다.
+- [set 0~100, 지금 값]으로 표시된 줄은 슬라이더입니다(밝기, 음량).
+  tap으로는 값을 고를 수 없으니 set에 node_id와 value를 주세요. value는 언제나
+  0~100 퍼센트입니다 — "절반으로"는 50, "최대로"는 100입니다.
 - 라벨이 목표와 글자 그대로 같지 않아도, 목표로 가는 길목이면 고르세요.
   (예: Wi-Fi는 "연결"이나 "네트워크" 안에, 글자 크기는 "디스플레이" 안에 있습니다)
 - 목록이 화면에 다 안 보일 수 있습니다. 찾는 항목이 없으면 scroll down 하세요.
@@ -554,12 +590,13 @@ CLOUD_SCHEMA = {
         "task": {"type": "STRING"},
         "value": {"type": "STRING"},
         "app": {"type": "STRING"},
+        "key": {"type": "STRING"},
         "field": {"type": "STRING"},
         "fields": {"type": "ARRAY", "items": {"type": "STRING"}},
     },
     "required": ["reason", "action"],
     "propertyOrdering": ["reason", "action", "node_id", "direction", "text", "screen",
-                         "task", "value", "app", "field", "fields"],
+                         "task", "value", "app", "key", "field", "fields"],
 }
 
 

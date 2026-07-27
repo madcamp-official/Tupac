@@ -388,6 +388,44 @@ class PocketMcpHttpServer(
                 ),
         )
     }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_set_progress")
+                .put(
+                    "description",
+                    "Moves a slider (brightness, volume, seek bar) to an exact value. " +
+                        "Only nodes that device_observe reported with a \"range\" can be set; " +
+                        "tapping such a node cannot choose a value.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put(
+                                "snapshot_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Exact snapshot_id from device_observe."),
+                            )
+                            .put(
+                                "node_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Slider node id from the same snapshot."),
+                            )
+                            .put(
+                                "value",
+                                JSONObject().put("type", "number")
+                                    .put(
+                                        "description",
+                                        "Target value inside the node's own min..max range.",
+                                    ),
+                            ),
+                    ).put(
+                        "required",
+                        JSONArray().put("snapshot_id").put("node_id").put("value"),
+                    ),
+                ),
+        )
+    }.also { result ->
         // 어댑터가 담당하는 device tool(screenshot/back/scroll/type_text…)을 한 번에 노출.
         val tools = result.getJSONArray("tools")
         mcpDeviceToolAdapter.definitions().forEach { definition -> tools.put(definition) }
@@ -426,6 +464,7 @@ class PocketMcpHttpServer(
             "device_fill_field" -> fillField(arguments)
             "device_get_field" -> getField(arguments)
             "device_type_node" -> typeNode(arguments)
+            "device_set_progress" -> setProgress(arguments)
             else -> if (mcpDeviceToolAdapter.handles(name)) {
                 mcpDeviceToolAdapter.call(name, arguments)
             } else {
@@ -568,6 +607,66 @@ class PocketMcpHttpServer(
         captureSnapshotOnMainThread()?.let(lastSnapshot::set)
         // 값은 응답에 싣지 않는다. 어디에 넣었는지만.
         return toolResult(JSONObject().put("success", true).put("node_id", nodeId))
+    }
+
+    /**
+     * 스냅샷에서 고른 슬라이더를 그 값으로 옮긴다.
+     *
+     * 범위를 넘는 값은 거절하지 않고 잘라 맞춘다. 모델이 "절반"을 50으로 옮겨
+     * 적었는데 그 슬라이더가 0~10이면 거절해봐야 다시 물어볼 뿐이고, 최댓값으로
+     * 두는 게 의도에 더 가깝다. 대신 실제로 넣은 값을 응답에 담아 알려준다.
+     */
+    private fun setProgress(arguments: JSONObject): JSONObject {
+        val snapshotId = arguments.optString("snapshot_id")
+        val nodeId = arguments.optString("node_id")
+        if (!arguments.has("value")) {
+            return toolError("MISSING_VALUE", "value가 필요합니다.")
+        }
+        val observed = lastSnapshot.get()
+            ?: return toolError("NO_OBSERVATION", "device_observe를 먼저 호출하세요.")
+        if (snapshotId.isBlank() || snapshotId != observed.fingerprint.hash) {
+            return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
+        }
+        val target = observed.nodes.firstOrNull { it.id == nodeId }
+            ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
+        val range = target.range
+            ?: return toolError(
+                "NOT_A_SLIDER",
+                "슬라이더가 아닌 노드입니다: $nodeId. 값을 가진 노드에만 쓸 수 있습니다.",
+            )
+        val service = AgentAccessibilityService.activeService
+            ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
+
+        val wanted = arguments.optDouble("value").toFloat()
+        if (wanted.isNaN()) {
+            return toolError("BAD_VALUE", "value는 숫자여야 합니다.")
+        }
+        val clamped = wanted.coerceIn(range.min, range.max)
+
+        val done = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            done.set(service.setProgressOnSnapshotNode(target, observed.packageName, clamped))
+            latch.countDown()
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        if (!done.get()) {
+            return toolError(
+                "SET_PROGRESS_FAILED",
+                "$nodeId 값을 바꾸지 못했습니다. 앱이 이 슬라이더의 값 설정을 지원하지 " +
+                    "않으면 화면에서 직접 끌어야 합니다.",
+            )
+        }
+
+        captureSnapshotOnMainThread()?.let(lastSnapshot::set)
+        val note = if (clamped != wanted) " (${range.min}~${range.max} 범위로 맞춤)" else ""
+        return toolResult(
+            JSONObject()
+                .put("success", true)
+                .put("node_id", nodeId)
+                .put("value", clamped)
+                .put("message", "$nodeId 를 $clamped 로 옮겼습니다$note."),
+        )
     }
 
     private fun fieldHints(): String =
@@ -827,6 +926,10 @@ class PocketMcpHttpServer(
                 node.clickable ||
                     node.editable ||
                     node.scrollable ||
+                    // 슬라이더는 clickable도 editable도 아니고 라벨도 없는 경우가
+                    // 많다(밝기 슬라이더가 그렇다). 여기 없으면 조작할 수 있는데도
+                    // 모델에게 아예 안 보인다.
+                    node.range != null ||
                     !node.text.isNullOrBlank() ||
                     !node.contentDescription.isNullOrBlank()
                 )
@@ -851,6 +954,15 @@ class PocketMcpHttpServer(
                     .put("scrollable", node.scrollable)
                     .put("enabled", node.enabled)
                     .put("checked", node.checked ?: JSONObject.NULL)
+                    .put(
+                        "range",
+                        node.range?.let { span ->
+                            JSONObject()
+                                .put("min", span.min)
+                                .put("max", span.max)
+                                .put("current", span.current)
+                        } ?: JSONObject.NULL,
+                    )
                     .put("depth", node.depth)
                     .put(
                         "bounds",

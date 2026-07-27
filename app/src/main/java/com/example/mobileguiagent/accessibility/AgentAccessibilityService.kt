@@ -20,6 +20,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import java.io.ByteArrayOutputStream
 import com.example.mobileguiagent.model.NodeActionResult
 import com.example.mobileguiagent.model.UiNode
+import com.example.mobileguiagent.model.UiRange
 import com.example.mobileguiagent.model.UiSnapshot
 import com.example.mobileguiagent.model.UiSnapshotStore
 import com.example.mobileguiagent.repository.AgentRepository
@@ -234,6 +235,9 @@ class AgentAccessibilityService : AccessibilityService() {
             depth = depth,
             visibleToUser = node.isVisibleToUser,
             password = node.isPassword,
+            range = node.rangeInfo?.let { info ->
+                UiRange(min = info.min, max = info.max, current = info.current)
+            },
         )
 
         for (index in 0 until node.childCount) {
@@ -310,6 +314,55 @@ class AgentAccessibilityService : AccessibilityService() {
             )
         }
         return match.node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
+    }
+
+    /**
+     * 스냅샷에서 고른 슬라이더를 그 값으로 옮긴다.
+     *
+     * 밝기나 음량은 tap으로는 맞출 수 없다. 슬라이더는 누른 좌표가 곧 값이라
+     * "절반으로 줄여줘"를 좌표로 환산해야 하는데, 트랙의 시작과 끝이 노드
+     * bounds와 일치한다는 보장이 없다(패딩과 손잡이 반지름만큼 어긋난다).
+     * ACTION_SET_PROGRESS는 값을 직접 준다.
+     *
+     * 칸을 찾는 방식은 setTextOnSnapshotNode와 같다. 관찰 직후에 부르므로 화면은
+     * 그대로이고, 그러면 bounds가 그 슬라이더를 가리키는 가장 확실한 표시다.
+     *
+     * 다만 true를 돌려줬다고 값이 반영됐다는 뜻은 아니다. 위젯이 손가락으로
+     * 놓는 순간에만 값을 적용하면, 손잡이는 옮겨지고 실제 설정은 그대로다.
+     * 실측(삼성 설정 앱 > 디스플레이 > 밝기): 노드의 current는 191 -> 63으로
+     * 바뀌었는데 screen_brightness는 191에 머물렀다. 같은 폰의 빠른 설정 패널
+     * 밝기 슬라이더는 정상이었다(191 -> 63이 그대로 반영됐다).
+     *
+     * 구별하는 표시가 하나 있다. 정상인 쪽은 눈금이 0~255로 화면 값과 같았고,
+     * 안 먹는 쪽은 0~267386880(255의 2^20배)이라는 제 나름의 눈금을 썼다.
+     */
+    fun setProgressOnSnapshotNode(
+        target: UiNode,
+        expectedPackage: String,
+        value: Float,
+    ): Boolean {
+        val root = rootInActiveWindow ?: return false
+        if (root.packageName?.toString() != expectedPackage) return false
+
+        val nodes = mutableListOf<IndexedNativeNode>()
+        collectIndexedNativeNodes(root, nodes)
+        val match = nodes
+            .asSequence()
+            .filter { item -> item.node.rangeInfo != null && item.node.isEnabled }
+            .maxByOrNull { item -> boundsSimilarityScore(item.node, target.bounds) }
+            ?: return false
+
+        val bounds = Rect()
+        match.node.getBoundsInScreen(bounds)
+        if (bounds != target.bounds) return false      // 같은 자리가 아니면 건드리지 않는다
+
+        val arguments = Bundle().apply {
+            putFloat(AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, value)
+        }
+        return match.node.performAction(
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id,
+            arguments,
+        )
     }
 
     fun clickSnapshotNode(

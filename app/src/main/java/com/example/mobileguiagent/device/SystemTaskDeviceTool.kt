@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.AudioManager
 import android.net.Uri
+import android.os.BatteryManager
 import android.provider.AlarmClock
 import android.provider.CalendarContract
 import android.provider.ContactsContract
@@ -46,6 +48,8 @@ object SystemTaskDeviceTool : DeviceTool {
         "timer" to "타이머를 바로 시작한다 (value=분 단위 숫자)",
         "show_alarms" to "알람 목록",
         "torch" to "손전등, 플래시, 후레쉬를 바로 켜거나 끈다 (value=on 또는 off)",
+        "volume" to "미디어 음량을 바로 바꾼다 (value=0~100 퍼센트, 또는 up/down/mute)",
+        "battery" to "배터리 잔량과 충전 여부를 알려준다. 화면을 열지 않는다",
         "camera" to "카메라, 사진 촬영",
         "gallery" to "갤러리, 사진 보기",
         "contacts" to "연락처, 주소록 목록",
@@ -56,8 +60,8 @@ object SystemTaskDeviceTool : DeviceTool {
         name = NAME,
         description = "Starts a built-in Android task (dial, sms, search, map, alarm, torch, " +
             "camera...). Never places a call or sends a message: " +
-            "those open a composer with the values filled in. Note that alarm and timer " +
-            "do take effect immediately.",
+            "those open a composer with the values filled in. Note that alarm, timer, torch " +
+            "and volume do take effect immediately, and battery only reports a value.",
         inputSchema = JSONObject()
             .put("type", "object")
             .put(
@@ -101,9 +105,11 @@ object SystemTaskDeviceTool : DeviceTool {
             )
 
         val intent = when (task) {
-            // 손전등만 인텐트가 아니다. 화면을 여는 게 아니라 하드웨어를 직접
-            // 건드리므로 여기서 처리하고 끝낸다.
+            // 아래 셋은 인텐트가 아니다. 화면을 여는 게 아니라 시스템 서비스를
+            // 직접 부르므로 여기서 처리하고 끝낸다.
             "torch" -> return setTorch(service, value)
+            "volume" -> return setVolume(service, value)
+            "battery" -> return readBattery(service)
 
             "dial" -> {
                 if (value.isEmpty()) return missingValue(task)
@@ -248,6 +254,96 @@ object SystemTaskDeviceTool : DeviceTool {
                     "다른 앱이 카메라를 쓰는 중일 수 있습니다.",
             )
         }
+    }
+
+    /**
+     * 미디어 음량을 바꾼다.
+     *
+     * 손전등과 같은 부류다. 소리 설정 화면을 열어 슬라이더를 조작할 수도 있지만
+     * (그쪽은 set_progress가 맡는다), AudioManager는 권한 없이 부를 수 있고
+     * 화면을 떠나지 않아도 된다. "볼륨 올려줘"가 한 스텝으로 끝난다.
+     *
+     * 벨소리가 아니라 미디어(STREAM_MUSIC)를 다룬다. 벨소리·알림 음량은 방해금지
+     * 모드가 켜져 있으면 정책 권한 없이는 못 바꿔서, 조용히 실패하는 대신 아예
+     * 건드리지 않는다. 벨소리를 바꾸려면 sound 화면을 열어 슬라이더를 쓰면 된다.
+     */
+    private fun setVolume(context: Context, value: String): DeviceToolResult {
+        val manager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            ?: return DeviceToolResult.Error(
+                code = "NO_AUDIO_SERVICE",
+                message = "이 기기에서 오디오 서비스를 쓸 수 없습니다.",
+            )
+
+        val stream = AudioManager.STREAM_MUSIC
+        val max = manager.getStreamMaxVolume(stream)
+        val squashed = squash(value)
+        // 퍼센트로 준 경우. "50%"처럼 기호가 붙어 와도 받는다.
+        val percent = squashed.removeSuffix("%").toIntOrNull()
+
+        val target = when {
+            percent != null -> {
+                if (percent !in 0..100) {
+                    return DeviceToolResult.Error(
+                        code = "BAD_VOLUME",
+                        message = "음량은 0~100 사이여야 합니다. 받은 값: $value",
+                    )
+                }
+                Math.round(max * percent / 100f)
+            }
+
+            squashed in setOf("up", "올려", "올려줘", "키워", "키워줘", "크게") ->
+                (manager.getStreamVolume(stream) + Math.max(1, max / 10)).coerceAtMost(max)
+
+            squashed in setOf("down", "내려", "내려줘", "줄여", "줄여줘", "작게") ->
+                (manager.getStreamVolume(stream) - Math.max(1, max / 10)).coerceAtLeast(0)
+
+            squashed in setOf("mute", "무음", "음소거", "꺼", "꺼줘") -> 0
+
+            else -> return DeviceToolResult.Error(
+                code = "MISSING_VALUE",
+                message = "음량은 value가 0~100 숫자이거나 up/down/mute여야 합니다. " +
+                    "받은 값: \"$value\"",
+            )
+        }
+
+        return runCatching {
+            // FLAG_SHOW_UI로 음량 패널을 띄운다. 사용자가 무슨 일이 일어났는지
+            // 볼 수 있고, 화면이 바뀌므로 에이전트도 반영된 걸 확인할 수 있다.
+            manager.setStreamVolume(stream, target, AudioManager.FLAG_SHOW_UI)
+            val applied = Math.round(manager.getStreamVolume(stream) * 100f / max)
+            DeviceToolResult.Success(message = "미디어 음량을 $applied% 로 맞췄습니다.")
+        }.getOrElse { error ->
+            Log.e(TAG, "Unable to set volume", error)
+            DeviceToolResult.Error(
+                code = "VOLUME_FAILED",
+                message = "음량을 바꾸지 못했습니다: ${error.message}. " +
+                    "방해금지 모드가 켜져 있을 수 있습니다.",
+            )
+        }
+    }
+
+    /**
+     * 배터리 잔량을 읽어 문장으로 돌려준다.
+     *
+     * 조작이 아니라 조회다. 지금까지는 이런 질문에도 설정 화면을 열고 관찰해서
+     * 숫자를 읽어야 했다 — 스텝 세 번에 모델 호출 세 번. 값은 시스템이 바로
+     * 알려주므로 그냥 답하면 된다. 결과 문장이 이력에 남아 모델이 이어서 쓴다.
+     */
+    private fun readBattery(context: Context): DeviceToolResult {
+        val manager = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+            ?: return DeviceToolResult.Error(
+                code = "NO_BATTERY_SERVICE",
+                message = "이 기기에서 배터리 서비스를 쓸 수 없습니다.",
+            )
+        val level = manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        if (level < 0) {
+            return DeviceToolResult.Error(
+                code = "BATTERY_UNKNOWN",
+                message = "배터리 잔량을 읽지 못했습니다.",
+            )
+        }
+        val charging = if (manager.isCharging) "충전 중입니다" else "충전 중이 아닙니다"
+        return DeviceToolResult.Success(message = "배터리 $level%, $charging.")
     }
 
     private fun squash(value: String) = value.trim().lowercase().replace(" ", "")
