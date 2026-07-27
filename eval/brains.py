@@ -148,6 +148,51 @@ def obvious_screen(shortcuts, goal):
     return best_key if best_score >= 3 and best_score > runner_up else None
 
 
+# 값 없이도 되는 작업만 규칙으로 고른다. 값이 필요한 작업(alarm은 시각, map은
+# 장소)을 규칙이 고르면 값을 못 채워 그대로 실패한다. torch는 예외로 둔다 —
+# 필요한 값이 켜기/끄기 둘뿐이고, 그건 목표 문장에 반드시 적혀 있다.
+VALUE_FREE_TASKS = ("show_alarms", "camera", "gallery", "contacts")
+TORCH_OFF_WORDS = ("꺼", "끄", "off")
+TORCH_ON_WORDS = ("켜", "on")
+
+
+def obvious_task(shortcuts, goal):
+    """목표가 어느 기본 작업인지 확실할 때 그 작업을 돌려준다. 아니면 None.
+
+    obvious_screen과 같은 이유로 있다. 다만 설정 화면과 달리 기본 작업 중에는
+    화면으로 갈 길 자체가 없는 것이 있다. 손전등이 그렇다 — 안드로이드에 손전등을
+    켜는 화면이 없어서, 규칙이 못 잡으면 모델이 홈 화면을 헤매다 끝난다(실측:
+    "후레쉬 꺼줘"에 같은 아이콘만 세 번 눌렀다).
+    """
+    text = squash(goal)
+    scored = []
+    for kind, key, description in shortcut_entries(shortcuts):
+        if kind != "task" or (key != "torch" and key not in VALUE_FREE_TASKS):
+            continue
+        by_description = overlap(text, squash(description))
+        by_key = len(key) if key in text else 0
+        scored.append((max(by_description, by_key), key))
+
+    scored.sort(reverse=True)
+    if not scored:
+        return None
+    best_score, best_key = scored[0]
+    runner_up = scored[1][0] if len(scored) > 1 else 0
+    if best_score < 3 or best_score <= runner_up:
+        return None
+
+    if best_key == "torch":
+        # 켜라는 건지 끄라는 건지는 목표 문장에만 있다. 안 적혀 있으면 규칙으로
+        # 정하지 않는다 — 짐작으로 켜면 사람이 원한 것과 반대일 수 있다.
+        # 끄기를 먼저 본다("꺼줘"에는 "켜"가 없지만 순서를 명시해둔다).
+        if any(word in text for word in TORCH_OFF_WORDS):
+            return {"action": "task", "task": "torch", "value": "off"}
+        if any(word in text for word in TORCH_ON_WORDS):
+            return {"action": "task", "task": "torch", "value": "on"}
+        return None
+    return {"action": "task", "task": best_key}
+
+
 def compact_shortcuts(shortcuts):
     """바로가기 목록에서 설명을 걷어내고 키만 남긴다.
 
@@ -401,6 +446,16 @@ class LocalBrain:
                 return ({"action": "open", "screen": key,
                          "reason": "목표에 이 화면 이름이 있어 규칙으로 골랐습니다"},
                         f"(규칙) open {key}")
+            found = obvious_task(shortcuts, goal)
+            if found:
+                found["reason"] = "목표에 이 작업 이름이 있어 규칙으로 골랐습니다"
+                # 이 한 번으로 목표가 끝난다. 규칙은 목표가 그 작업 하나로 딱
+                # 떨어질 때만 고르고, 작업은 화면을 여는 게 아니라 그 자체가
+                # 결과다. 안 알려주면 루프가 계속 돈다 — 손전등은 켜도 화면이
+                # 그대로라, 모델이 홈 화면 아이콘을 눌러대다 스텝을 다 썼다.
+                found["final"] = True
+                value = f" {found['value']}" if found.get("value") else ""
+                return found, f"(규칙) task {found['task']}{value}"
 
         recent = "\n".join(history[-self.max_history:]) or "(아직 없음)"
         block = f"\n\n{extra}" if extra else ""

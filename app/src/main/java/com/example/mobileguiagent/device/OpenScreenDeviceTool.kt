@@ -36,6 +36,9 @@ object OpenScreenDeviceTool : DeviceTool {
         "bluetooth" to (Settings.ACTION_BLUETOOTH_SETTINGS to "블루투스"),
         "airplane" to (Settings.ACTION_AIRPLANE_MODE_SETTINGS to "비행기 탑승 모드"),
         "connections" to (Settings.ACTION_WIRELESS_SETTINGS to "연결, 네트워크 전체"),
+        // 설명에 "와이파이"를 넣지 않는다. wifi 화면과 점수가 같아져 규칙이 둘 다
+        // 포기하고 모델에게 넘겨버린다(실측: "와이파이 켜줘"가 규칙을 못 탔다).
+        "hotspot" to (ACTION_TETHER_SETTINGS to "모바일 핫스팟, 테더링, 인터넷 공유"),
         "data_usage" to (Settings.ACTION_DATA_USAGE_SETTINGS to "데이터 사용량, 통신"),
         "nfc" to (Settings.ACTION_NFC_SETTINGS to "NFC, 엔에프씨"),
         "display" to (Settings.ACTION_DISPLAY_SETTINGS to "화면, 밝기, 글자 크기, 폰트, 다크 모드"),
@@ -124,4 +127,13 @@ object OpenScreenDeviceTool : DeviceTool {
     // 안정적으로 동작하지만, 없는 기기를 대비해 위에서 resolveActivity로 거른다.
     private const val ACTION_NOTIFICATION_SETTINGS = "android.settings.NOTIFICATION_SETTINGS"
     private const val ACTION_BATTERY_SETTINGS = "android.intent.action.POWER_USAGE_SUMMARY"
+
+    // 핫스팟은 화면을 여는 것까지만 한다. 켜고 끄는 API(TetheringManager)는 시스템
+    // 앱에만 열려 있어서, 일반 앱이 부를 수 있는 길이 없다. 화면까지 데려다주면
+    // 나머지는 평소대로 스위치를 tap하면 된다.
+    //
+    // 개발 중 주의: 핫스팟을 켜면 폰의 Wi-Fi가 끊긴다. 무선 adb로 붙어 있었다면
+    // 그 연결도 같이 죽어서 폰에서 직접 끄기 전까지 다시 붙을 수 없다(실측).
+    // 이 화면을 테스트할 때는 USB로 연결해두는 편이 낫다.
+    private const val ACTION_TETHER_SETTINGS = "android.settings.TETHER_SETTINGS"
 }

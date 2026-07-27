@@ -517,6 +517,11 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
 
         outcome = scrub(execute(action, observation, dry), secrets)
         print(f"     결과: {outcome}")
+        # 이 한 번으로 끝나는 행동이었으면 여기서 마친다. 모델에게 "다 됐다"고
+        # 말하게 시키면 못 한다(실측: 1.2B는 done을 좀처럼 내지 않는다).
+        if action.get("final") and outcome.startswith("성공"):
+            print(f"{'=' * 60}\n요청한 작업을 실행했습니다. 화면을 확인하세요.")
+            return
         if handoff and current and outcome.startswith("성공"):
             if current["action"] == "type":
                 filled.add(current["field"])

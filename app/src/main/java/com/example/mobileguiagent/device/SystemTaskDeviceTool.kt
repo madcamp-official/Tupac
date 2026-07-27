@@ -1,7 +1,10 @@
 package com.example.mobileguiagent.device
 
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.provider.AlarmClock
 import android.provider.CalendarContract
@@ -42,6 +45,7 @@ object SystemTaskDeviceTool : DeviceTool {
         "alarm" to "알람을 바로 등록하고 켠다 (value=HH:MM, text=알람 이름)",
         "timer" to "타이머를 바로 시작한다 (value=분 단위 숫자)",
         "show_alarms" to "알람 목록",
+        "torch" to "손전등, 플래시, 후레쉬를 바로 켜거나 끈다 (value=on 또는 off)",
         "camera" to "카메라, 사진 촬영",
         "gallery" to "갤러리, 사진 보기",
         "contacts" to "연락처, 주소록 목록",
@@ -50,8 +54,8 @@ object SystemTaskDeviceTool : DeviceTool {
 
     override val definition = DeviceToolDefinition(
         name = NAME,
-        description = "Starts a built-in Android task (dial, sms, search, map, alarm, " +
-            "camera...) with a standard intent. Never places a call or sends a message: " +
+        description = "Starts a built-in Android task (dial, sms, search, map, alarm, torch, " +
+            "camera...). Never places a call or sends a message: " +
             "those open a composer with the values filled in. Note that alarm and timer " +
             "do take effect immediately.",
         inputSchema = JSONObject()
@@ -97,6 +101,10 @@ object SystemTaskDeviceTool : DeviceTool {
             )
 
         val intent = when (task) {
+            // 손전등만 인텐트가 아니다. 화면을 여는 게 아니라 하드웨어를 직접
+            // 건드리므로 여기서 처리하고 끝낸다.
+            "torch" -> return setTorch(service, value)
+
             "dial" -> {
                 if (value.isEmpty()) return missingValue(task)
                 Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(value)}"))
@@ -193,6 +201,56 @@ object SystemTaskDeviceTool : DeviceTool {
             )
         }
     }
+
+    /**
+     * 손전등을 켜거나 끈다.
+     *
+     * 다른 작업과 달리 인텐트로는 할 수 없다. 안드로이드에 손전등을 켜는 공개
+     * 인텐트가 없어서, 모델이 아무리 길을 잘 찾아도 도달할 화면 자체가 없었다
+     * (실측: "후레쉬 꺼줘"에 홈 화면에서 같은 아이콘만 세 번 눌렀다). 대신
+     * CameraManager.setTorchMode는 권한 없이 부를 수 있고 바로 반영된다.
+     *
+     * 카메라가 이미 쓰이는 중이면 실패한다. 그건 막을 방법이 없으니 그대로 알린다.
+     */
+    private fun setTorch(context: Context, value: String): DeviceToolResult {
+        val wanted = when (squash(value)) {
+            "on", "true", "1", "켜기", "켜", "켜줘", "켜다" -> true
+            "off", "false", "0", "끄기", "꺼", "꺼줘", "끄다" -> false
+            else -> return DeviceToolResult.Error(
+                code = "MISSING_VALUE",
+                message = "손전등은 value가 on 또는 off여야 합니다. 받은 값: \"$value\"",
+            )
+        }
+
+        val manager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+            ?: return DeviceToolResult.Error(
+                code = "NO_CAMERA_SERVICE",
+                message = "이 기기에서 카메라 서비스를 쓸 수 없습니다.",
+            )
+
+        return runCatching {
+            val camera = manager.cameraIdList.firstOrNull { id ->
+                manager.getCameraCharacteristics(id)
+                    .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            } ?: return DeviceToolResult.Error(
+                code = "NO_FLASH",
+                message = "이 기기에는 플래시가 없습니다.",
+            )
+            manager.setTorchMode(camera, wanted)
+            DeviceToolResult.Success(
+                message = "손전등을 ${if (wanted) "켰습니다" else "껐습니다"}.",
+            )
+        }.getOrElse { error ->
+            Log.e(TAG, "Unable to set torch", error)
+            DeviceToolResult.Error(
+                code = "TORCH_FAILED",
+                message = "손전등을 바꾸지 못했습니다: ${error.message}. " +
+                    "다른 앱이 카메라를 쓰는 중일 수 있습니다.",
+            )
+        }
+    }
+
+    private fun squash(value: String) = value.trim().lowercase().replace(" ", "")
 
     private fun missingValue(task: String) = DeviceToolResult.Error(
         code = "MISSING_VALUE",
