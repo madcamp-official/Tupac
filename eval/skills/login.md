@@ -1,6 +1,7 @@
 ---
 name: login
 when: 아이디와 비밀번호를 입력하는 로그인 화면
+submit: yes
 needs: username, password
 ---
 ## 클라우드

@@ -48,6 +48,9 @@ def load():
         catalog[name] = {
             "when": meta.get("when", ""),
             "needs": [key.strip() for key in meta.get("needs", "").split(",") if key.strip()],
+            # 제출까지 하는 절차인지. 로그인은 실패해도 다시 하면 되지만 배송지·
+            # 결제 폼은 주문으로 이어지므로 사람이 누른다.
+            "submit": meta.get("submit", "no").lower() in ("yes", "true", "y"),
             "cloud": cloud,
             "device": device,
         }
@@ -121,12 +124,21 @@ def _parse(text):
     return meta, match.group(2)
 
 
-def handoff_text(name, skill, values):
-    """기기 안 모델에게 줄 문맥. 절차서 하나와 실제 값.
+def handoff_text(plan, current):
+    """기기 안 모델에게 줄 문맥. 할 단계 목록과 지금 할 한 줄.
+
+    어느 칸에 무엇을 넣을지는 code가 이미 정했다(assign.py). 모델이 화면을 보고
+    고를 필요가 없도록 노드 번호까지 박아 보여주고, 다음에 할 한 줄을 따로
+    짚어준다. 실측으로 1.2B는 구체적인 예시를 그대로 베끼는 성향이 강한데,
+    여기서는 그 성향이 그대로 도움이 된다 — 베낄 대상이 곧 정답이다.
 
     값이 프롬프트에 그대로 실린다. 클라우드에는 절대 가지 않지만, 기기 안 모델의
     컨텍스트에는 들어간다는 뜻이다. 그래서 agent.py가 로그와 이력에서는 이 값을
     가린다 — 터미널 기록이나 다음 스텝 프롬프트로 새어나가지 않게.
     """
-    lines = "\n".join(f"  {key} 값 = {value}" for key, value in values.items())
-    return (f"할 일: {skill['device']}\n\n넣을 값:\n{lines}")
+    lines = []
+    for step in plan:
+        mark = "[완료]" if step["state"] == "done" else ("→" if step is current else "     ")
+        lines.append(f"  {mark} {step['line']}   ({step['why']})")
+    return ("정해진 순서대로 하나씩 실행합니다.\n" + "\n".join(lines)
+            + f"\n\n지금 할 것: {current['line']}\n이 한 줄을 그대로 답하세요.")

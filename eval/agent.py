@@ -37,6 +37,7 @@ import time
 import urllib.error
 import urllib.request
 
+import assign
 import brains
 import privacy
 import skills
@@ -285,6 +286,10 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
     # 클라우드가 need를 내면 여기에 값과 절차서가 담기고, 그때부터 기기 안
     # 모델이 이어받는다. secrets는 로그·이력에서 값을 가리는 데 쓴다.
     handoff, secrets = None, {}
+    # 계획은 "무엇을 채울지"만 담는다. "어느 칸인지"는 매 스텝 다시 찾는다 —
+    # 노드 번호는 스냅샷마다 새로 매겨져서 미리 박아두면 어긋난다.
+    order, want_submit, filled, submitted = [], False, set(), False
+    plan, current = [], None
     history = []
     previous_id = None
     pending = None          # 직전 행동의 이력. 화면이 바뀌었는지는 아직 모른다.
@@ -347,7 +352,23 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
 
         started = time.time()
         try:
-            context = handoff or reference
+            if handoff:
+                plan, current = assign.steps_now(
+                    observation, secrets, fields, order, want_submit, filled, submitted)
+                # 계획이 끝났으면 모델에게 물을 것이 없다. 여기서 마무리한다.
+                # 실측: 다 끝난 뒤 오류 대화상자를 만난 1.2B가 "type node_12 값 /
+                # tap node_18 / wait / done" 같은 문자열을 반복해 뱉었다. 남은
+                # 판단이 없는데 모델을 부르면 그런 헛수고만 생긴다.
+                if current["action"] == "done":
+                    did = ", ".join(order) + (" 입력 후 제출" if submitted else " 입력")
+                    print(f"{'=' * 60}\n계획한 단계를 모두 마쳤습니다 ({did}).")
+                    print(f"현재 화면: [{observation['package_name']}] "
+                          f"{describe(observation)}")
+                    print("→ 결과를 화면에서 확인하세요.")
+                    return
+                context = skills.handoff_text(plan, current)
+            else:
+                context = reference
             action, raw = brain.decide(goal, screen, observation, history,
                                        shortcuts, context, focused=bool(handoff))
         except brains.BrainError as error:
@@ -385,9 +406,17 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
                 outcome = (f"실패: 값을 얻지 못했습니다. {', '.join(missing)}"
                            if missing else f"실패: {wanted}에 맞는 절차서가 없습니다")
             else:
-                handoff = skills.handoff_text(name, catalog[name], secrets)
-                outcome = (f"성공: {', '.join(secrets)} 값을 기기 안 모델에게 넘겼습니다"
-                           + (f" (못 얻은 것: {', '.join(missing)})" if missing else ""))
+                # 어느 칸에 무엇을 넣을지는 여기서 정한다. 모델에게 화면을 보고
+                # 고르게 하면 틀린다(실측). 절차서의 submit 여부는 그대로 따른다.
+                want_submit = bool(catalog[name].get("submit")) and not no_submit
+                order = assign.plan_fields(observation, secrets, fields)
+                filled, submitted = set(), False
+                if not order:
+                    outcome = "실패: 값을 넣을 칸을 화면에서 찾지 못했습니다"
+                else:
+                    handoff = True
+                    outcome = ("성공: " + ", ".join(order) + " 순서로 채웁니다"
+                               + (" (그다음 제출)" if want_submit else ""))
             print(f"     결과: {outcome}")
             pending = f"step{step}: need {' '.join(wanted)} → {outcome}"
             pending_kind = "need"
@@ -400,6 +429,15 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
 
         outcome = scrub(execute(action, observation, dry), secrets)
         print(f"     결과: {outcome}")
+        # 계획대로 한 단계를 마쳤으면 다음으로. 어긋난 행동은 진행으로 세지 않으므로
+        # 같은 단계를 다시 보여주게 된다.
+        if handoff and outcome.startswith("성공") and current:
+            if (action["action"] == current["action"]
+                    and action.get("node_id") == current.get("node_id")):
+                if current["action"] == "type":
+                    filled.add(current["field"])
+                elif current["action"] == "tap":
+                    submitted = True
         # 아직 history에 넣지 않는다. 다음 observe로 화면 변화를 확인한 뒤 붙인다.
         # 이력은 다음 스텝 프롬프트로 들어가고, 클라우드로 되돌아갈 수도 있다.
         # detail·outcome은 이미 scrub을 거쳤지만 한 번 더 확인한다.

@@ -1,6 +1,7 @@
 ---
 name: form
 when: 이름·연락처·주소 같은 개인정보 칸이 여럿인 입력 폼(배송지, 회원가입 등)
+submit: no
 needs: name, phone, postcode, address, address_detail
 ---
 ## 클라우드
