@@ -27,6 +27,10 @@ NOT_SUBMIT_WORDS = ("찾기", "가입", "취소", "다른", "간편", "재설정
 # 브라우저로 볼 패키지 조각. 로그인을 웹으로 넘기는 앱이 많아 자주 마주친다.
 BROWSER_MARKERS = ("chrome", "browser", "firefox", "sbrowser", "whale", "opera", "edge")
 
+# 앱마다 따로 등록하는 값. 폰의 SecretVault.ACCOUNT_FIELDS와 같아야 한다.
+# 공통 정보(이름·주소)와 달리 이 둘은 하나만 있으면 쓸 수 없다.
+ACCOUNT_FIELDS = ("username", "password")
+
 
 def is_browser_ui(node, observation):
     """브라우저가 그린 자기 UI(주소창·탭 버튼)인지. 웹 페이지 내용이 아니다.
@@ -48,9 +52,16 @@ def is_browser_ui(node, observation):
 def label_of(node):
     """그 칸이 무엇인지 알려주는 글자.
 
-    빈 입력창은 text가 비어 있고 안내 문구가 hint에만 있는 경우가 있다(크롬의
-    웹 폼이 그렇다). 셋 다 봐야 어느 앱에서든 칸을 알아본다.
+    입력창은 hint를 먼저 본다. 빈 칸이면 안내 문구가 hint에만 있고(크롬의 웹
+    폼이 그렇다), 이미 값이 들어 있는 칸이면 text에 라벨이 아니라 그 값이
+    들어 있기 때문이다. text를 먼저 보면 "받는사람" 칸에 남아 있던 "홍길동"이
+    라벨로 잡혀 어느 필드에도 안 걸리고, 그 칸은 "화면에 없음"으로 보고된다.
+
+    입력창이 아닌 노드는 text가 곧 라벨이므로 순서를 바꾸지 않는다.
     """
+    if node.get("editable"):
+        return (node.get("hint") or node.get("content_description")
+                or node.get("text") or "").strip()
     return (node.get("text") or node.get("content_description")
             or node.get("hint") or "").strip()
 
@@ -139,6 +150,19 @@ def submit_button(observation):
         if any(word in label for word in SUBMIT_WORDS):
             found.append(node)
     return found[0] if len(found) == 1 else None
+
+
+def unusable_account(wanted, got):
+    """계정이 반쪽이면 빠진 필드 목록. 쓸 수 있으면 빈 목록.
+
+    계정은 쌍으로만 쓴다. 아이디 없이 비밀번호만 넣고 로그인을 누르면 반드시
+    실패하는데, 그 실패가 앱에 따라 시도 횟수로 잡혀 계정이 잠긴다. 되돌릴 수
+    없는 쪽이므로 화면을 건드리기 전에 멈춘다.
+
+    공통 정보는 이 규칙에 걸리지 않는다. 이름만 있고 전화번호가 없으면 이름만
+    채우고 제출하지 않으면 되고, 그건 이미 want_submit이 막는다.
+    """
+    return [key for key in wanted if key in ACCOUNT_FIELDS and key not in got]
 
 
 def plan_fields(observation, values, field_hint):

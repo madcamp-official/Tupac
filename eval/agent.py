@@ -365,6 +365,9 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
     # 클라우드가 need를 내면 여기에 값과 절차서가 담기고, 그때부터 기기 안
     # 모델이 이어받는다. secrets는 로그·이력에서 값을 가리는 데 쓴다.
     handoff, secrets = None, {}
+    # 요청했지만 금고에 없던 필드. 값이 빠진 채로 제출하지 않기 위한 것이다.
+    # secrets에는 아예 안 담기므로 아래 left 계산만으로는 보이지 않는다.
+    unmet = []
     # 계획은 "무엇을 채울지"만 담는다. "어느 칸인지"는 매 스텝 다시 찾는다 —
     # 노드 번호는 스냅샷마다 새로 매겨져서 미리 박아두면 어긋난다.
     order, want_submit, filled, submitted = [], False, set(), False
@@ -464,7 +467,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
                 left = [field for field in secrets if field not in order]
                 plan, current, blocked = assign.steps_now(
                     observation, secrets, fields, order,
-                    want_submit and not left, filled, submitted)
+                    want_submit and not left and not unmet, filled, submitted)
 
                 # 보이는 칸을 다 채웠는데 아직 못 넣은 값이 남았으면 화면 밖에 칸이
                 # 더 있을 수 있다. 이걸 모델에게 시키지 않는다 — 스크롤은 판단이
@@ -507,9 +510,15 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
                 if current["action"] == "done":
                     did = ", ".join(order) + (" 입력 후 제출" if submitted else " 입력")
                     print(f"{'=' * 60}\n계획한 단계를 모두 마쳤습니다 ({did}).")
+                    # 못 채운 이유가 둘이라 따로 알린다. 칸을 못 찾은 것과 값이
+                    # 없는 것은 사람이 할 일이 다르다 — 앞은 화면을 확인하는
+                    # 일이고, 뒤는 금고에 등록하는 일이다.
                     if left:
-                        print(f"→ {', '.join(left)}는 넣을 칸을 못 찾아 비워뒀습니다"
-                              + (" (제출도 하지 않았습니다)" if want_submit else ""))
+                        print(f"→ {', '.join(left)}는 넣을 칸을 못 찾아 비워뒀습니다")
+                    if unmet:
+                        print(f"→ {', '.join(unmet)}는 금고에 없어 비워뒀습니다")
+                    if (left or unmet) and want_submit:
+                        print("→ 값이 빠져 제출하지 않았습니다")
                     print(f"현재 화면: [{observation['package_name']}] "
                           f"{describe(observation, secrets)}")
                     print("→ 결과를 화면에서 확인하세요.")
@@ -547,17 +556,27 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         if action["action"] == "need":
             wanted = action.get("fields") or []
             name = skills.for_fields(catalog, wanted)
-            missing = []
+            # 받아온 값을 바로 secrets에 넣지 않는다. 계정이 반쪽이면 아무것도
+            # 쓰지 않고 물러나야 하는데, 미리 넣으면 되돌릴 자리가 없다.
+            fetched, missing = {}, []
             for key in wanted:
                 got = mcp("device_get_field", {"field": key})
                 if got.get("success"):
-                    secrets[key] = got["value"]
+                    fetched[key] = got["value"]
                 else:
                     missing.append(f"{key}({got.get('message') or got.get('error')})")
-            if not secrets or name is None:
+            half = assign.unusable_account(wanted, fetched)
+            if half:
+                outcome = (f"실패: {', '.join(half)}가 이 앱에 등록돼 있지 않습니다. "
+                           "계정은 아이디와 비밀번호가 모두 있어야 씁니다 "
+                           "(앱의 \"내 정보\" 화면에서 등록하세요)")
+            elif not fetched or name is None:
                 outcome = (f"실패: 값을 얻지 못했습니다. {', '.join(missing)}"
                            if missing else f"실패: {wanted}에 맞는 절차서가 없습니다")
             else:
+                secrets.update(fetched)
+                # 요청했는데 금고에 없던 것. 아래에서 제출을 막는 데 쓴다.
+                unmet = [key for key in wanted if key not in fetched]
                 # 어느 칸에 무엇을 넣을지는 여기서 정한다. 모델에게 화면을 보고
                 # 고르게 하면 틀린다(실측). 절차서의 submit 여부는 그대로 따른다.
                 want_submit = bool(catalog[name].get("submit")) and not no_submit

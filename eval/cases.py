@@ -110,6 +110,16 @@ SIGNUP_FORM = screen(
     node("node_3", hint="상세주소", editable=True),
 )
 
+# 값이 이미 들어 있는 배송지 폼. 앱이 지난 주문 값을 남겨두거나 자동완성이
+# 채워둔 경우다. 채워진 칸은 text에 라벨이 아니라 그 값이 들어 있어서, text를
+# 먼저 보면 "홍길동"이 라벨이 되어 어느 필드에도 안 걸린다.
+FILLED_FORM = screen(
+    "com.example.shop",
+    node("node_1", text="홍길동", hint="받는사람", editable=True),
+    node("node_2", hint="연락처", editable=True),
+    node("node_3", text="04524", hint="우편번호", editable=True),
+)
+
 # 삼성 설정의 밝기 화면. 슬라이더가 라벨도 clickable도 없고, 눈금은 위젯
 # 마음대로다(0~267386880 = 255의 2^20배).
 BRIGHTNESS = screen(
@@ -247,6 +257,24 @@ FIELDS = [
      "'이메일 주소'를 공백으로 쪼개면 아래 '주소' 칸이 email로 잡힌다"),
     (CHROME_LOGIN_PW, {"username": "minsu", "password": "pw1234"}, ["password"],
      "주소창을 안 거르면 '비밀번호 아닌 칸'이 주소창뿐이라 아이디가 거기 들어간다"),
+    (FILLED_FORM, {"name": "김철수", "phone": "01012345678", "postcode": "06236"},
+     ["name", "phone", "postcode"],
+     "이미 채워진 칸은 text가 라벨이 아니라 값이다. text를 먼저 보면 "
+     "'홍길동'·'04524'가 라벨로 잡혀 그 칸들이 통째로 빠지고, 남의 주소가 "
+     "그대로 남은 채 진행된다"),
+]
+
+# 계정이 반쪽일 때. (요청한 필드, 금고에서 받아온 것, 못 쓰는 필드, 왜)
+ACCOUNTS = [
+    (["username", "password"], {"username": "minsu", "password": "pw1234"}, [],
+     "둘 다 있으면 그대로 쓴다"),
+    (["username", "password"], {"password": "pw1234"}, ["username"],
+     "비밀번호만 넣고 로그인을 누르면 반드시 실패하는데, 그 실패가 앱에 따라 "
+     "시도 횟수로 잡혀 계정이 잠긴다. 화면을 건드리기 전에 멈춰야 한다"),
+    (["username", "password"], {}, ["username", "password"],
+     "그 앱 계정이 아예 등록돼 있지 않은 경우"),
+    (["name", "phone", "postcode"], {"name": "홍길동"}, [],
+     "공통 정보는 쌍이 아니다. 있는 것만 채우고 제출을 안 하면 된다"),
 ]
 
 # 제출 버튼. (화면, 기대 node_id 또는 None, 왜)

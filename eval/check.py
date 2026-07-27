@@ -162,6 +162,15 @@ def check_fields(report):
                      expected, actual, why)
 
 
+def check_accounts(report):
+    """계정 쌍 — 아이디나 비밀번호 한쪽만 있을 때 물러서는가"""
+    report.start("계정 쌍 (반쪽이면 화면을 건드리지 않는다)")
+    for wanted, got, expected, why in cases.ACCOUNTS:
+        actual = assign.unusable_account(wanted, got)
+        report.check(actual == expected, f"{wanted} ← 가진 것 {sorted(got)}",
+                     expected, actual, why)
+
+
 def check_submit(report):
     """제출 버튼 — 확실할 때만 고르고, 애매하면 비켜서는가"""
     report.start("제출 버튼 고르기")
@@ -215,6 +224,7 @@ CHECKS = {
     "rules": check_rules,
     "parse": check_parse,
     "fields": check_fields,
+    "accounts": check_accounts,
     "submit": check_submit,
     "redact": check_redact,
     "patterns": check_patterns,
