@@ -1,4 +1,4 @@
-"""스킬 — 모델이 불러 쓰는 절차서.
+"""스킬 — 모델이 읽는 절차서.
 
 스킬은 코드가 아니라 마크다운 문서다(eval/skills/*.md). 호출하는 함수 같은 것이
 아니다 — 절차서 전체가 처음부터 프롬프트에 참고자료로 실려 있고, 모델이 그걸
@@ -14,10 +14,21 @@
 앱 것으로 묶이는 것은 device_fill_field가 보장한다. 모델이 절차를 틀려도
 그 보증은 깨지지 않는다.
 
+흐름은 셋으로 나뉜다.
+
+    클라우드 모델   화면까지 찾아가고, "여기엔 어떤 값이 필요하다"까지 판단한다.
+                    값은 받지 않는다. need <필드들> 로 키만 넘긴다.
+    code            그 키로 폰의 금고에서 값을 꺼내 기기 안 모델에게 넘긴다.
+    기기 안 모델    받은 값을 화면의 칸에 넣고 제출까지 한다.
+
+절차서는 두 쪽 모두를 위한 문서다. 클라우드용 한 줄("need를 내라")과 기기 안
+모델용 절차가 같은 파일에 있다. 상황과 절차가 한 곳에 있어야 어긋나지 않는다.
+
 파일 형식:
     ---
     name: login
-    when: 아이디와 비밀번호를 입력하는 로그인 화면을 만났을 때
+    when: 아이디와 비밀번호를 입력하는 로그인 화면
+    needs: username, password
     ---
     (절차 본문)
 """
@@ -33,8 +44,28 @@ def load():
     for path in sorted(DIR.glob("*.md")):
         meta, body = _parse(path.read_text(encoding="utf-8"))
         name = meta.get("name") or path.stem
-        catalog[name] = {"when": meta.get("when", ""), "body": body.strip()}
+        catalog[name] = {
+            "when": meta.get("when", ""),
+            "needs": [key.strip() for key in meta.get("needs", "").split(",") if key.strip()],
+            "body": body.strip(),
+        }
     return catalog
+
+
+def for_fields(catalog, fields):
+    """요청된 필드를 가장 많이 담당하는 절차서. 없으면 None.
+
+    클라우드가 need username password 를 내면 login 절차서가, name·주소 계열을
+    내면 form 절차서가 뽑힌다. 기기 안 모델에게는 그 하나만 준다 — 관계없는
+    절차까지 주면 짧은 모델이 엉뚱한 쪽을 따라간다.
+    """
+    wanted = set(fields)
+    best, best_hits = None, 0
+    for name, skill in catalog.items():
+        hits = len(wanted & set(skill["needs"]))
+        if hits > best_hits:
+            best, best_hits = name, hits
+    return best
 
 
 def reference_text(catalog, field_hint="", no_submit=False):
@@ -46,7 +77,9 @@ def reference_text(catalog, field_hint="", no_submit=False):
     """
     if not catalog:
         return ""
-    parts = [f"◆ {name} — 이럴 때: {skill['when']}\n{skill['body']}"
+    parts = [f"◆ {name} — 이럴 때: {skill['when']}"
+             + (f" (필요한 값: {', '.join(skill['needs'])})" if skill["needs"] else "")
+             + f"\n{skill['body']}"
              for name, skill in catalog.items()]
     if field_hint:
         parts.append(f"금고 필드: {field_hint}")
@@ -66,3 +99,15 @@ def _parse(text):
         if value:
             meta[key.strip()] = value.strip()
     return meta, match.group(2)
+
+
+def handoff_text(name, skill, values):
+    """기기 안 모델에게 줄 문맥. 절차서 하나와 실제 값.
+
+    값이 프롬프트에 그대로 실린다. 클라우드에는 절대 가지 않지만, 기기 안 모델의
+    컨텍스트에는 들어간다는 뜻이다. 그래서 agent.py가 로그와 이력에서는 이 값을
+    가린다 — 터미널 기록이나 다음 스텝 프롬프트로 새어나가지 않게.
+    """
+    lines = "\n".join(f"  {key} = {value}" for key, value in values.items())
+    return (f"◆ 지금 할 일: {name}\n{skill['body']}\n\n"
+            f"넣을 값 (이 값을 그대로 type 하세요):\n{lines}")

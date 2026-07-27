@@ -333,6 +333,61 @@ class PocketMcpHttpServer(
                 ),
         )
     }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_get_field")
+                .put(
+                    "description",
+                    "Returns a personal-data value stored on the device so the caller can " +
+                        "type it. Account fields are bound to the app currently on screen.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject().put(
+                            "field",
+                            JSONObject()
+                                .put("type", "string")
+                                .put("enum", JSONArray(SecretVault.FIELDS.keys.toList()))
+                                .put("description", fieldHints()),
+                        ),
+                    ).put("required", JSONArray().put("field")),
+                ),
+        )
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_type_node")
+                .put(
+                    "description",
+                    "Types text into one input from the newest device_observe snapshot. " +
+                        "Unlike device_type_text this does not rely on focus.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put(
+                                "snapshot_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Exact snapshot_id from device_observe."),
+                            )
+                            .put(
+                                "node_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Input node id from the same snapshot."),
+                            )
+                            .put(
+                                "text",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Text to put in that input."),
+                            ),
+                    ).put(
+                        "required",
+                        JSONArray().put("snapshot_id").put("node_id").put("text"),
+                    ),
+                ),
+        )
+    }.also { result ->
         // 어댑터가 담당하는 device tool(screenshot/back/scroll/type_text…)을 한 번에 노출.
         val tools = result.getJSONArray("tools")
         mcpDeviceToolAdapter.definitions().forEach { definition -> tools.put(definition) }
@@ -369,6 +424,8 @@ class PocketMcpHttpServer(
             "device_open_settings" -> openSettings()
             "device_click_node" -> clickNode(arguments)
             "device_fill_field" -> fillField(arguments)
+            "device_get_field" -> getField(arguments)
+            "device_type_node" -> typeNode(arguments)
             else -> if (mcpDeviceToolAdapter.handles(name)) {
                 mcpDeviceToolAdapter.call(name, arguments)
             } else {
@@ -410,6 +467,88 @@ class PocketMcpHttpServer(
                 .put("after_package", after?.packageName ?: JSONObject.NULL)
                 .put("after_snapshot_id", after?.fingerprint?.hash ?: JSONObject.NULL),
         )
+    }
+
+    /**
+     * 금고 값을 꺼내 돌려준다.
+     *
+     * fill_field는 값을 밖으로 내보내지 않지만 이건 내보낸다. 흐름이 그렇게 정해져
+     * 있기 때문이다 — 클라우드 모델이 "이 화면엔 아이디·비밀번호가 필요하다"까지만
+     * 판단하고, 값을 꺼내 기기 안 모델에게 넘기는 건 code가 한다.
+     *
+     * 값이 나가는 만큼 조건은 그대로 지킨다. 계정 필드는 지금 화면에 떠 있는 앱
+     * 것만 준다. 부르는 쪽이 다른 앱 계정을 지목할 수 없다.
+     */
+    private fun getField(arguments: JSONObject): JSONObject {
+        val field = arguments.optString("field")
+        if (!SecretVault.FIELDS.containsKey(field)) {
+            return toolError(
+                "UNKNOWN_FIELD",
+                "모르는 필드입니다: $field. 가능한 값: ${SecretVault.FIELDS.keys.joinToString()}",
+            )
+        }
+        val service = AgentAccessibilityService.activeService
+            ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
+
+        val value = AtomicReference<String?>(null)
+        val app = AtomicReference<String?>(null)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            val currentApp = service.rootInActiveWindow?.packageName?.toString()
+            app.set(currentApp)
+            value.set(
+                when {
+                    !SecretVault.isAccountField(field) -> SecretVault.reveal(service, field)
+                    currentApp == null -> null
+                    else -> SecretVault.reveal(service, field, currentApp)
+                },
+            )
+            latch.countDown()
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+
+        val found = value.get()
+            ?: return toolError(
+                "FIELD_NOT_SET",
+                if (SecretVault.isAccountField(field)) {
+                    "이 앱(${app.get()})의 $field 이(가) 등록돼 있지 않습니다."
+                } else {
+                    "$field 값이 저장돼 있지 않습니다."
+                },
+            )
+        return toolResult(JSONObject().put("success", true).put("field", field).put("value", found))
+    }
+
+    /** 스냅샷에서 고른 입력창에 글자를 넣는다. 포커스에 기대지 않는다. */
+    private fun typeNode(arguments: JSONObject): JSONObject {
+        val snapshotId = arguments.optString("snapshot_id")
+        val nodeId = arguments.optString("node_id")
+        val text = arguments.optString("text")
+        val observed = lastSnapshot.get()
+            ?: return toolError("NO_OBSERVATION", "device_observe를 먼저 호출하세요.")
+        if (snapshotId.isBlank() || snapshotId != observed.fingerprint.hash) {
+            return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
+        }
+        val target = observed.nodes.firstOrNull { it.id == nodeId }
+            ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
+        if (!target.editable) {
+            return toolError("NOT_EDITABLE", "입력창이 아닌 노드입니다: $nodeId")
+        }
+        val service = AgentAccessibilityService.activeService
+            ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
+
+        val done = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            done.set(service.setTextOnSnapshotNode(target, observed.packageName, text))
+            latch.countDown()
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        if (!done.get()) return toolError("TYPE_FAILED", "$nodeId 에 글자를 넣지 못했습니다.")
+
+        captureSnapshotOnMainThread()?.let(lastSnapshot::set)
+        // 값은 응답에 싣지 않는다. 어디에 넣었는지만.
+        return toolResult(JSONObject().put("success", true).put("node_id", nodeId))
     }
 
     private fun fieldHints(): String =

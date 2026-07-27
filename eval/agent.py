@@ -49,6 +49,19 @@ STALL_LIMIT = 3          # 화면이 이만큼 연속으로 안 바뀌면 중단
 WAIT_SECONDS = 2.0       # wait 행동이 쉬는 시간
 
 
+def scrub(text, secrets):
+    """로그와 이력에서 금고 값을 가린다.
+
+    핸드오프한 값은 기기 안 모델의 프롬프트에는 들어가지만, 그 밖으로는 나가면
+    안 된다. 안 가리면 비밀번호가 터미널 스크롤백에 남고, 이력에 실려 다음 스텝
+    프롬프트로 들어가며, 클라우드로 되돌아가는 순간 그대로 나간다.
+    """
+    for name, value in secrets.items():
+        if value:
+            text = text.replace(value, f"<{name} 값>")
+    return text
+
+
 def describe(observation):
     """화면에 보이는 라벨을 한 줄로. 사람이 어느 화면인지 알아보게만 하면 된다."""
     labels = [(n.get("text") or n.get("content_description") or n.get("hint") or "").strip()
@@ -194,6 +207,17 @@ def execute(action, observation, dry):
         return "성공: 스크롤함" if result.get("success") else f"실패: {result.get('error')}"
 
     if kind == "type":
+        node_id = action.get("node_id")
+        if node_id:
+            # 칸을 지목해 넣는다. 포커스에 기대면 크롬 웹 폼처럼 포커스가 안 잡히는
+            # 화면에서 모든 값이 첫 칸에 덮어써진다(실측).
+            result = mcp("device_type_node", {
+                "snapshot_id": observation["snapshot_id"],
+                "node_id": node_id,
+                "text": action.get("text", ""),
+            })
+            return (f"성공: {node_id}에 입력함" if result.get("success")
+                    else f"실패: {result.get('message') or result.get('error')}")
         result = mcp("device_type_text", {"text": action.get("text", "")})
         return "성공: 입력함" if result.get("success") else f"실패: {result.get('error')}"
 
@@ -250,13 +274,17 @@ def execute(action, observation, dry):
 
 def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
     """cloud로 진행하다가, 민감한 화면을 만나면 fallback(기기 안 모델)으로 넘긴다."""
-    note = "" if cloud is fallback else f", 민감 화면은 {fallback.name}"
+    note = "" if cloud is fallback else f", 값 입력은 {fallback.name}"
     print(f"목표: {goal}  (brain: {cloud.name}{note})\n{'=' * 60}")
     shortcuts = shortcut_hint()      # 폰이 지원하는 바로가기. 스텝마다 바뀌지 않는다.
     fields = field_hint()            # 금고가 다루는 필드. 절차서에 함께 싣는다.
     # 절차서는 호출 대상이 아니라 참고 문서다. 전체 본문을 처음부터 프롬프트에
     # 싣고, 어느 절차가 지금 상황에 맞는지는 모델이 읽고 판단한다.
-    reference = skills.reference_text(skills.load(), fields, no_submit)
+    catalog = skills.load()
+    reference = skills.reference_text(catalog, fields, no_submit)
+    # 클라우드가 need를 내면 여기에 값과 절차서가 담기고, 그때부터 기기 안
+    # 모델이 이어받는다. secrets는 로그·이력에서 값을 가리는 데 쓴다.
+    handoff, secrets = None, {}
     history = []
     previous_id = None
     pending = None          # 직전 행동의 이력. 화면이 바뀌었는지는 아직 모른다.
@@ -301,21 +329,27 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         # 라우팅. 민감한 화면은 기기 밖으로 내보내지 않는다. 판정 단위가 화면인
         # 이유는 observe가 화면 텍스트를 통째로 주기 때문이다. type만 로컬로
         # 돌려봐야 이미 입력된 주민번호가 관찰 단계에서 나가버린다.
-        reason = privacy.sensitive_reason(observation)
-        brain = fallback if (reason and cloud.online) else cloud
-        if reason and brain is not cloud:
-            print(f"     ↳ 민감 화면({reason}) → {brain.name} 모델로 처리")
+        # 라우팅. 클라우드는 로그인 화면까지 보고 "무슨 값이 필요한지"를 판단해야
+        # 하므로, 화면이 민감하다는 이유만으로 막지 않는다(막으면 흐름이 끊긴다).
+        # 대신 두 가지는 지킨다. 은행·결제·인증 앱은 화면 자체를 클라우드에
+        # 안 보내고, 클라우드가 need를 낸 뒤로는 기기 안 모델이 이어받는다.
+        blocked = privacy.blocked_app(observation)
+        brain = fallback if ((blocked or handoff) and cloud.online) else cloud
+        if brain is not cloud:
+            why = blocked or "값 입력 구간"
+            print(f"     ↳ {why} → {brain.name} 모델로 처리")
 
         screen = render_screen(observation, all_nodes, redact=brain.online)
-        # 실수로 민감 화면이 나가는 일을 코드로 막는다. 라우팅 조건을 나중에
+        # 실수로 민감 앱이 나가는 일을 코드로 막는다. 라우팅 조건을 나중에
         # 손대다 어긋나면 조용히 유출되므로, 여기서 멈추는 편이 낫다.
-        if brain.online and reason:
-            sys.exit(f"[중단] 민감 화면({reason})을 온라인 모델로 보내려 했습니다.")
+        if brain.online and blocked:
+            sys.exit(f"[중단] {blocked}을 온라인 모델로 보내려 했습니다.")
 
         started = time.time()
         try:
+            context = handoff or reference
             action, raw = brain.decide(goal, screen, observation, history,
-                                       shortcuts, reference)
+                                       shortcuts, context)
         except brains.BrainError as error:
             sys.exit(f"모델 호출 실패: {error}\n  {brain.hint(error.status)}")
         elapsed = time.time() - started
@@ -331,20 +365,45 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
                           ("node_id", "screen", "task", "value", "app", "field",
                            "direction", "text", "mark")
                           if action.get(key))
+        detail = scrub(detail, secrets)
         print(f"[{step}] {action['action']} {detail}"
               f"  ({observation['meaningful_node_count']}노드, {elapsed:.1f}s)")
         if action.get("reason"):
             print(f"     이유: {action['reason'][:100]}")
+
+        if action["action"] == "need":
+            wanted = action.get("fields") or []
+            name = skills.for_fields(catalog, wanted)
+            missing = []
+            for key in wanted:
+                got = mcp("device_get_field", {"field": key})
+                if got.get("success"):
+                    secrets[key] = got["value"]
+                else:
+                    missing.append(f"{key}({got.get('message') or got.get('error')})")
+            if not secrets or name is None:
+                outcome = (f"실패: 값을 얻지 못했습니다. {', '.join(missing)}"
+                           if missing else f"실패: {wanted}에 맞는 절차서가 없습니다")
+            else:
+                handoff = skills.handoff_text(name, catalog[name], secrets)
+                outcome = (f"성공: {', '.join(secrets)} 값을 기기 안 모델에게 넘겼습니다"
+                           + (f" (못 얻은 것: {', '.join(missing)})" if missing else ""))
+            print(f"     결과: {outcome}")
+            pending = f"step{step}: need {' '.join(wanted)} → {outcome}"
+            pending_kind = "need"
+            continue
 
         if action["action"] == "done":
             who = "스킬이" if raw == "(skill)" else "모델이"
             print(f"{'=' * 60}\n{who} 마무리했습니다. 화면을 확인하세요.")
             return
 
-        outcome = execute(action, observation, dry)
+        outcome = scrub(execute(action, observation, dry), secrets)
         print(f"     결과: {outcome}")
         # 아직 history에 넣지 않는다. 다음 observe로 화면 변화를 확인한 뒤 붙인다.
-        pending = f"step{step}: {action['action']} {detail} → {outcome}"
+        # 이력은 다음 스텝 프롬프트로 들어가고, 클라우드로 되돌아갈 수도 있다.
+        # detail·outcome은 이미 scrub을 거쳤지만 한 번 더 확인한다.
+        pending = scrub(f"step{step}: {action['action']} {detail} → {outcome}", secrets)
         pending_kind = action["action"]
         time.sleep(1.2)          # 화면 전환이 끝날 때까지 잠깐 기다린다
 

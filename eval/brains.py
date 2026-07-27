@@ -42,7 +42,7 @@ GEMINI_URL = os.environ.get("GEMINI_URL") or (
 MAX_QUOTA_WAIT = 90          # 429 재시도에 쓸 누적 대기 상한(초)
 
 ACTIONS = ("tap", "scroll", "type", "back", "open", "task", "launch",
-           "list_apps", "fill", "wait", "done")
+           "list_apps", "fill", "need", "wait", "done")
 DIRECTIONS = ("up", "down", "left", "right")
 
 
@@ -207,7 +207,7 @@ def parse_action(raw):
     # 쉼표)을 못 지켜 구조가 무너지는 일이 잦아, 가장 쓰기 쉬운 형식을 먼저 본다.
     first_line = raw.strip().splitlines()[0].strip() if raw.strip() else ""
     match = re.match(
-        r"^[\s\-*`]*(tap|scroll|type|back|open|task|launch|fill|wait|done)\b[:\s]*(.*)$",
+        r"^[\s\-*`]*(tap|scroll|type|back|open|task|launch|fill|need|wait|done)\b[:\s]*(.*)$",
         first_line, re.IGNORECASE)
     if match:
         verb, arg = match.group(1).lower(), match.group(2).strip().strip('"\'`')
@@ -219,6 +219,11 @@ def parse_action(raw):
             direction = next((d for d in DIRECTIONS if d in arg.lower()), "down")
             return {"action": "scroll", "direction": direction}
         elif verb == "type":
+            # "type node_12 홍길동" — 칸을 지목하면 포커스에 기대지 않는다.
+            # "type 홍길동" — 예전 형식도 받는다(포커스된 칸에 들어간다).
+            head, _, rest = arg.partition(" ")
+            if head.startswith("node_") and rest.strip():
+                return {"action": "type", "node_id": head, "text": rest.strip()}
             if arg:
                 return {"action": "type", "text": arg}
         elif verb == "open":
@@ -235,6 +240,11 @@ def parse_action(raw):
         elif verb == "launch":
             if arg:
                 return {"action": "launch", "app": arg}
+        elif verb == "need":
+            # "need username password" — 값이 필요하다는 신호. 값은 code가 꺼낸다.
+            wanted = [word for word in arg.replace(",", " ").split() if word]
+            if wanted:
+                return {"action": "need", "fields": wanted}
         elif verb == "fill":
             # "fill node_16 username" — 칸과 금고 필드를 함께 지목한다.
             parts = arg.split()
@@ -390,12 +400,15 @@ CLOUD_RULES = """행동은 다음뿐입니다. 위쪽 네 개를 먼저 고려�
               값이 필요한 작업은 value에, 문자 내용이나 알람 이름은 text에 씁니다.
 - launch    : app 필수. 설치된 앱을 이름으로 실행합니다(예: app="카카오톡").
 - list_apps : 어떤 앱이 깔려 있는지 모를 때. app에 검색어를 넣으면 걸러 봅니다.
+- need   : fields 필수. 개인정보를 입력해야 하는 화면에 도착했을 때, 직접 채우지
+             말고 필요한 값의 이름만 넘깁니다(예: fields=["username","password"]).
+             값은 당신에게 오지 않습니다. 기기 안 모델이 이어받아 입력합니다.
 - fill   : node_id와 field 필수. 폰에 저장된 개인정보를 그 입력창에 넣습니다.
              값은 폰 안에서 처리되며 당신은 값을 보지 못합니다.
 - wait   : 화면 전환이나 처리 결과를 기다립니다.
 - tap    : node_id 필수. 화면에 실제로 있는 번호만 씁니다.
 - scroll : direction 필수(up/down/left/right).
-- type   : text 필수. 화면에 [type] 노드가 있을 때만 씁니다.
+- type   : text 필수. node_id를 함께 주면 그 칸에 넣습니다(권장).
 - back   : 잘못 들어왔거나 막다른 화면일 때 되돌아갑니다.
 - done   : 목표 화면에 도착했을 때. 마지막 한 번만.
 
@@ -442,10 +455,11 @@ CLOUD_SCHEMA = {
         "value": {"type": "STRING"},
         "app": {"type": "STRING"},
         "field": {"type": "STRING"},
+        "fields": {"type": "ARRAY", "items": {"type": "STRING"}},
     },
     "required": ["reason", "action"],
     "propertyOrdering": ["reason", "action", "node_id", "direction", "text", "screen",
-                         "task", "value", "app", "field"],
+                         "task", "value", "app", "field", "fields"],
 }
 
 

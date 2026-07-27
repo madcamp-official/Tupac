@@ -143,6 +143,23 @@ def redact(label, observation):
     return f"<내용 {len(label)}자>"
 
 
+def blocked_app(observation):
+    """화면 자체를 클라우드에 보내면 안 되는 앱이면 이유를, 아니면 None.
+
+    민감 화면 전체를 막던 것에서 앱 단위로 좁혔다. 클라우드가 로그인 화면을
+    보고 "여긴 아이디·비밀번호가 필요하다"까지 판단해야 흐름이 이어지기 때문이다.
+    비밀번호 칸이 있다는 이유로 막으면 그 판단 자체를 못 한다.
+
+    대신 은행·결제·인증 앱은 그대로 막는다. 거기서는 화면에 뜬 것 자체가
+    잔액·거래내역이고, 클라우드가 볼 이유가 없다.
+    """
+    package = (observation.get("package_name") or "").lower()
+    for marker in SENSITIVE_PACKAGES:
+        if marker in package:
+            return f"민감한 앱({package})"
+    return None
+
+
 def sensitive_reason(observation):
     """민감 화면이면 이유를, 아니면 None.
 
