@@ -196,6 +196,18 @@ def _post_json(url, payload, headers, timeout):
         raise BrainError(f"연결 실패({url}): {error.reason}") from error
 
 
+def strip_thinking(raw):
+    """<think>...</think> 블록을 걷어낸다.
+
+    Qwen 계열은 기본이 사고 모드라 답 앞에 사고 과정을 먼저 쓴다. 그대로 두면
+    파서가 첫 줄(사고의 시작)만 보고 실패해서, 판단이 틀린 것과 형식이 다른 것을
+    구분할 수 없다. 모델을 바꿔가며 비교하려면 이걸 먼저 걷어내야 한다.
+    """
+    if "</think>" in raw:
+        raw = raw.split("</think>", 1)[1]
+    return raw.strip()
+
+
 def parse_action(raw):
     """모델 응답에서 행동을 뽑아낸다 (주로 로컬 모델용).
 
@@ -205,6 +217,7 @@ def parse_action(raw):
     """
     # 1순위: "tap node_41" 같은 한 줄 형식. 작은 모델은 JSON 문법(따옴표·중괄호·
     # 쉼표)을 못 지켜 구조가 무너지는 일이 잦아, 가장 쓰기 쉬운 형식을 먼저 본다.
+    raw = strip_thinking(raw)
     first_line = raw.strip().splitlines()[0].strip() if raw.strip() else ""
     match = re.match(
         r"^[\s\-*`]*(tap|scroll|type|back|open|task|launch|fill|need|wait|done)\b[:\s]*(.*)$",
@@ -222,8 +235,12 @@ def parse_action(raw):
             # "type node_12 홍길동" — 칸을 지목하면 포커스에 기대지 않는다.
             # "type 홍길동" — 예전 형식도 받는다(포커스된 칸에 들어간다).
             head, _, rest = arg.partition(" ")
-            if head.startswith("node_") and rest.strip():
-                return {"action": "type", "node_id": head, "text": rest.strip()}
+            if head.startswith("node_"):
+                # "type node_18"처럼 넣을 글자가 없으면 형식 오류로 본다. 예전에는
+                # 예전 형식("type 값")으로 넘어가 "node_18"이라는 글자를 그대로
+                # 칸에 집어넣었다(실측: 아이디 칸에 node_18이 입력됐다).
+                return ({"action": "type", "node_id": head, "text": rest.strip()}
+                        if rest.strip() else None)
             if arg:
                 return {"action": "type", "text": arg}
         elif verb == "open":
@@ -338,7 +355,7 @@ class LocalBrain:
         payload = {
             "messages": messages,
             "temperature": 0.1,      # EXAONE 카드 권장: 한국어는 낮은 온도
-            "max_tokens": 60,
+            "max_tokens": int(os.environ.get("LOCAL_MAX_TOKENS", "60")),
             # json_schema로 문법을 강제하면 모델이 생각하기 전에 action부터 확정하게 되어
             # (실측) 계속 scroll만 고르는 문제가 있었다. 형식은 프롬프트로 유도하고
             # 파싱은 parse_action에서 관대하게 처리한다.
