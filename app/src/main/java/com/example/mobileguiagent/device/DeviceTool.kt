@@ -1,5 +1,6 @@
 package com.example.mobileguiagent.device
 
+import com.example.mobileguiagent.model.UiSnapshot
 import org.json.JSONObject
 
 data class DeviceToolDefinition(
@@ -20,6 +21,16 @@ sealed interface DeviceToolResult {
         val height: Int,
     ) : DeviceToolResult
 
+    data class UiObservation(
+        val snapshot: UiSnapshot,
+    ) : DeviceToolResult
+
+    data class Action(
+        val action: String,
+        val success: Boolean,
+        val message: String,
+    ) : DeviceToolResult
+
     /** 이미지가 아니라 "동작이 성공했다"만 돌려주는 tool(back, swipe, type_text 등)용 결과. */
     data class Success(
         val message: String? = null,
@@ -37,12 +48,32 @@ interface DeviceTool {
     fun execute(arguments: JSONObject): DeviceToolResult
 }
 
+/**
+ * Executes already validated device-tool calls.
+ *
+ * Agent runtimes depend on this narrow contract instead of depending on a
+ * model-specific adapter. This keeps Android actions reusable from local VLM,
+ * cloud VLM, and MCP entry points without coupling those protocols together.
+ */
+fun interface DeviceToolExecutor {
+    fun execute(call: DeviceToolCall): DeviceToolResult
+}
+
 class DeviceToolRegistry(
     tools: List<DeviceTool> = listOf(
         CaptureScreenDeviceTool,
-        BackDeviceTool,
+        ObserveUiDeviceTool,
+        GoHomeDeviceTool,
+        GoBackDeviceTool,
+        WaitDeviceTool,
+        TapNodeDeviceTool,
+        SetTextDeviceTool,
+        FillSecretDeviceTool,
+        SubmitTextDeviceTool,
+        TapDeviceTool,
+        SwipeDeviceTool,
+        FinishDeviceTool,
         ScrollDeviceTool,
-        TypeTextDeviceTool,
         OpenScreenDeviceTool,
         SystemTaskDeviceTool,
         SystemActionDeviceTool,
@@ -50,13 +81,13 @@ class DeviceToolRegistry(
         ListAppsDeviceTool,
         ListFieldsDeviceTool,
     ),
-) {
+) : DeviceToolExecutor {
     private val toolsByName = tools.associateBy { tool -> tool.definition.name }
 
     val definitions: List<DeviceToolDefinition> =
         tools.map(DeviceTool::definition)
 
-    fun execute(call: DeviceToolCall): DeviceToolResult {
+    override fun execute(call: DeviceToolCall): DeviceToolResult {
         val tool = toolsByName[call.name]
             ?: return DeviceToolResult.Error(
                 code = "UNKNOWN_TOOL",

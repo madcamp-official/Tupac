@@ -19,14 +19,20 @@ data class UiNode(
     val scrollable: Boolean,
     val enabled: Boolean,
     val checked: Boolean?,
+    /** Strong local-only signal supplied directly by AccessibilityNodeInfo. */
+    val password: Boolean = false,
+    /** Helps local input handling without exposing the field value. */
+    val focused: Boolean = false,
+    /** Android text input flags when this is an editable node. */
+    val inputType: Int = 0,
     val bounds: Rect,
     val depth: Int,
-    // 현재 화면에 실제로 보이는지(안드로이드 isVisibleToUser). 가려지거나 화면 밖이면 false.
+    /**
+     * Android's current visibility judgement. The full snapshot keeps hidden
+     * nodes for fingerprint/click consistency, but model-facing adapters must
+     * exclude them so the planner cannot choose an occluded or off-screen view.
+     */
     val visibleToUser: Boolean = true,
-    // 비밀번호 입력창인지. 이 화면을 클라우드 모델에 보내면 안 된다고 판단하는
-    // 가장 강한 신호다. 값 자체는 접근성 트리에도 안 나오지만, 이런 칸이 있는
-    // 화면이면 주변에 아이디·주민번호 같은 것이 함께 있다고 봐야 한다.
-    val password: Boolean = false,
     // 슬라이더·진행바라면 그 값의 범위. 밝기와 음량이 대표적이다.
     val range: UiRange? = null,
 )
@@ -43,6 +49,23 @@ data class UiRange(
     val max: Float,
     val current: Float,
 )
+
+/**
+ * Keeps actionable controls and human-readable labels while dropping hidden
+ * layout/decorative nodes. This is deliberately a serialization-time filter:
+ * traversal ids and the snapshot fingerprint continue to use the full tree.
+ */
+fun UiNode.isMeaningfulForAgent(): Boolean =
+    visibleToUser &&
+        (
+            clickable ||
+                editable ||
+                scrollable ||
+                range != null ||
+                !text.isNullOrBlank() ||
+                !contentDescription.isNullOrBlank() ||
+                !hint.isNullOrBlank()
+            )
 
 data class UiSnapshot(
     val packageName: String,
@@ -95,15 +118,4 @@ data class NodeActionResult(
     val matchedText: String? = null,
     val matchedNodeId: String? = null,
     val usedClickableAncestor: Boolean = false,
-)
-
-data class PocMetric(
-    val task: String,
-    val success: Boolean,
-    val steps: Int,
-    val latencyMs: Long,
-    val nodeActionUsed: Boolean,
-    val coordinateActionUsed: Boolean,
-    val screenChanged: Boolean,
-    val failureCode: String?,
 )

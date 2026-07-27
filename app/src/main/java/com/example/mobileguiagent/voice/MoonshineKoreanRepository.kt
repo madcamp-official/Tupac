@@ -4,20 +4,18 @@ import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.os.SystemClock
 import android.util.Log
-import ai.moonshine.voice.AssetDownloader
-import ai.moonshine.voice.JNI
-import ai.moonshine.voice.ModelSpec
-import ai.moonshine.voice.Transcriber
-import ai.moonshine.voice.TranscriberOption
-import ai.moonshine.voice.TranscriptEvent
-import ai.moonshine.voice.TranscriptEventListener
+import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.sqrt
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -28,7 +26,7 @@ data class MoonshineKoreanState(
     val downloading: Boolean = false,
     val loading: Boolean = false,
     val listening: Boolean = false,
-    val status: String = "한국어 모델을 준비하세요.",
+    val status: String = "고정밀 로컬 STT를 준비하세요.",
     val progress: Float? = null,
     val currentText: String = "",
     val completedText: String = "",
@@ -36,113 +34,97 @@ data class MoonshineKoreanState(
     val testLatencyMs: Long? = null,
 )
 
+/**
+ * Fully local Korean STT using SenseVoice Small INT8 through sherpa-onnx.
+ *
+ * Network is used only once to download model assets. Audio capture and every
+ * transcription run happen inside this process without a speech API/server.
+ */
 object MoonshineKoreanRepository {
-    private const val MODEL_DIRECTORY = "moonshine/tiny-ko"
-    private val modelSpec = ModelSpec.stt(
-        "ko",
-        JNI.MOONSHINE_MODEL_ARCH_TINY,
-        false,
-    )
     private val executor = Executors.newSingleThreadExecutor()
     private val mutableState = MutableStateFlow(MoonshineKoreanState())
     private val mutableFinalTranscripts = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    private val recording = AtomicBoolean(false)
+
     val state = mutableState.asStateFlow()
     val finalTranscripts = mutableFinalTranscripts.asSharedFlow()
 
     @Volatile
-    private var transcriber: Transcriber? = null
-    private val recording = AtomicBoolean(false)
+    private var recognizer: OfflineRecognizer? = null
     @Volatile
     private var audioRecord: AudioRecord? = null
 
     fun refresh(context: Context) {
-        if (transcriber != null) {
-            mutableState.value = mutableState.value.copy(modelReady = true)
-            return
-        }
-        executor.execute {
-            val present = runCatching {
-                AssetDownloader().isModelPresent(modelDirectory(context), modelSpec)
-            }.getOrDefault(false)
-            mutableState.value = mutableState.value.copy(
-                modelReady = present,
-                status = if (present) {
-                    "한국어 Tiny 모델이 설치되어 있습니다."
-                } else {
-                    "한국어 Tiny 모델을 다운로드해야 합니다."
-                },
-            )
-        }
+        val present = modelFile(context).isFile && tokensFile(context).isFile
+        mutableState.value = mutableState.value.copy(
+            modelReady = recognizer != null || present,
+            status = if (recognizer != null) {
+                "SenseVoice Korean · 완전 로컬"
+            } else if (present) {
+                "SenseVoice Korean 모델 설치됨"
+            } else {
+                "고정밀 SenseVoice 모델 다운로드 필요 · 약 229MB"
+            },
+            error = null,
+        )
     }
 
-    fun ensureReady(
-        context: Context,
-        onReady: (() -> Unit)? = null,
-    ) {
-        if (transcriber != null) {
+    fun ensureReady(context: Context, onReady: (() -> Unit)? = null) {
+        if (recognizer != null) {
             onReady?.invoke()
             return
         }
-        val current = mutableState.value
-        if (current.downloading || current.loading) return
-
-        mutableState.value = current.copy(
+        if (mutableState.value.downloading || mutableState.value.loading) return
+        mutableState.value = mutableState.value.copy(
             downloading = true,
             loading = false,
-            status = "Moonshine Korean 모델 확인 중…",
-            progress = null,
+            status = "SenseVoice 모델 확인 중…",
             error = null,
         )
         executor.execute {
             runCatching {
-                val downloader = AssetDownloader()
-                val directory = modelDirectory(context)
-                val root = downloader.ensureModelPresent(
-                    directory,
-                    modelSpec,
-                ) { path, index, total, done, size ->
-                    val fileProgress = if (size > 0) {
-                        done.toFloat() / size.toFloat()
-                    } else {
-                        0f
-                    }
-                    val overallProgress = ((index - 1) + fileProgress) / total.coerceAtLeast(1)
-                    mutableState.value = mutableState.value.copy(
-                        downloading = true,
-                        status = "모델 다운로드 $index/$total · $path",
-                        progress = overallProgress.coerceIn(0f, 1f),
-                    )
-                }
+                val directory = modelDirectory(context).apply { mkdirs() }
+                downloadIfMissing(MODEL_URL, File(directory, MODEL_FILE_NAME), 0f, 0.995f)
+                downloadIfMissing(TOKENS_URL, File(directory, TOKENS_FILE_NAME), 0.995f, 1f)
                 mutableState.value = mutableState.value.copy(
                     downloading = false,
                     loading = true,
-                    status = "한국어 모델 로딩 중…",
+                    status = "SenseVoice 로컬 엔진 로딩 중…",
                     progress = 1f,
                 )
-                val loaded = createTranscriber()
-                loaded.loadFromFiles(
-                    root.absolutePath,
-                    JNI.MOONSHINE_MODEL_ARCH_TINY,
+                OfflineRecognizer(
+                    config = OfflineRecognizerConfig(
+                        featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
+                        modelConfig = OfflineModelConfig(
+                            senseVoice = OfflineSenseVoiceModelConfig(
+                                model = modelFile(context).absolutePath,
+                                language = "ko",
+                                useInverseTextNormalization = true,
+                            ),
+                            tokens = tokensFile(context).absolutePath,
+                            numThreads = Runtime.getRuntime().availableProcessors()
+                                .coerceIn(4, 8),
+                            provider = "cpu",
+                        ),
+                    ),
                 )
-                transcriber = loaded
-            }.onSuccess {
-                Log.i(TAG, "Korean Tiny model downloaded and loaded successfully")
+            }.onSuccess { loaded ->
+                recognizer = loaded
                 mutableState.value = mutableState.value.copy(
                     modelReady = true,
                     downloading = false,
                     loading = false,
-                    status = "Moonshine Korean 준비 완료 · 완전 로컬",
+                    status = "SenseVoice Korean · 완전 로컬",
                     progress = null,
                     error = null,
                 )
                 onReady?.invoke()
             }.onFailure { error ->
-                Log.e(TAG, "Unable to prepare Korean Tiny model", error)
+                Log.e(TAG, "Unable to prepare SenseVoice Korean", error)
                 mutableState.value = mutableState.value.copy(
                     downloading = false,
                     loading = false,
-                    listening = false,
-                    status = "Moonshine Korean 준비 실패",
+                    status = "로컬 STT 준비 실패",
                     progress = null,
                     error = error.message ?: error::class.java.simpleName,
                 )
@@ -150,51 +132,41 @@ object MoonshineKoreanRepository {
         }
     }
 
-    fun onMicPermissionGranted() = Unit
-
     @Suppress("MissingPermission")
     fun startListening(): Boolean {
-        val active = transcriber ?: return false
+        val active = recognizer ?: return false
         if (!recording.compareAndSet(false, true)) return true
         return runCatching {
-            active.start()
-            val minimumBuffer = AudioRecord.getMinBufferSize(
-                AUDIO_SAMPLE_RATE,
+            val minimum = AudioRecord.getMinBufferSize(
+                SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
             )
             val recorder = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                AUDIO_SAMPLE_RATE,
+                SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
-                maxOf(minimumBuffer, AUDIO_CHUNK_SAMPLES * 2),
+                maxOf(minimum, CHUNK_SAMPLES * 2),
             )
-            check(recorder.state == AudioRecord.STATE_INITIALIZED) {
-                "AudioRecord 초기화에 실패했습니다."
-            }
+            check(recorder.state == AudioRecord.STATE_INITIALIZED)
             audioRecord = recorder
             recorder.startRecording()
-            Thread(
-                { captureMicrophone(active, recorder) },
-                "MoonshineKoreanMic",
-            ).start()
-            Log.i(TAG, "Korean microphone transcription started")
             mutableState.value = mutableState.value.copy(
                 listening = true,
-                status = "듣는 중… 한국어로 말해보세요.",
+                status = "듣는 중… 한국어로 말씀하세요.",
                 currentText = "",
+                completedText = "",
                 error = null,
             )
+            executor.execute { captureAndTranscribe(active, recorder) }
             true
         }.getOrElse { error ->
             recording.set(false)
-            runCatching { audioRecord?.release() }
-            audioRecord = null
             mutableState.value = mutableState.value.copy(
                 listening = false,
-                status = "음성인식 시작 실패",
-                error = error.message ?: error::class.java.simpleName,
+                status = "마이크 시작 실패",
+                error = error.message,
             )
             false
         }
@@ -210,175 +182,132 @@ object MoonshineKoreanRepository {
     }
 
     fun markCommandForwarded(text: String) {
-        mutableState.value = mutableState.value.copy(
-            status = "MiniCPM 입력 전달 완료: $text",
-        )
+        mutableState.value = mutableState.value.copy(status = "MiniCPM 입력 전달 완료: $text")
     }
 
-    fun runSampleTest(context: Context) {
-        ensureReady(context) {
-            mutableState.value = mutableState.value.copy(
-                status = "내장 한국어 음성 샘플 인식 중…",
-                currentText = "",
-                error = null,
-                testLatencyMs = null,
-            )
-            executor.execute {
-                runCatching {
-                    val wav = readPcm16Wav(
-                        context.assets.open(TEST_AUDIO_ASSET).use { it.readBytes() },
-                    )
-                    val startedAt = SystemClock.elapsedRealtime()
-                    val transcript = requireNotNull(transcriber).transcribeWithoutStreaming(
-                        wav.samples,
-                        wav.sampleRate,
-                    )
-                    transcript.text().trim() to
-                        (SystemClock.elapsedRealtime() - startedAt)
-                }.onSuccess { (text, latencyMs) ->
-                    Log.i(TAG, "Korean sample test completed in ${latencyMs}ms: $text")
-                    mutableState.value = mutableState.value.copy(
-                        status = "내장 샘플 인식 완료",
-                        currentText = "",
-                        completedText = text,
-                        testLatencyMs = latencyMs,
-                        error = null,
-                    )
-                }.onFailure { error ->
-                    Log.e(TAG, "Korean sample test failed", error)
-                    mutableState.value = mutableState.value.copy(
-                        status = "내장 샘플 인식 실패",
-                        error = error.message ?: error::class.java.simpleName,
-                    )
-                }
-            }
-        }
-    }
-
-    private fun captureMicrophone(
-        active: Transcriber,
-        recorder: AudioRecord,
-    ) {
-        val pcm = ShortArray(AUDIO_CHUNK_SAMPLES)
+    private fun captureAndTranscribe(active: OfflineRecognizer, recorder: AudioRecord) {
+        val pcm = ArrayList<Short>(SAMPLE_RATE * 8)
+        val chunk = ShortArray(CHUNK_SAMPLES)
+        var speechStarted = false
+        var silentChunks = 0
         try {
-            while (recording.get()) {
-                val count = recorder.read(pcm, 0, pcm.size)
+            while (recording.get() && pcm.size < SAMPLE_RATE * MAX_SECONDS) {
+                val count = recorder.read(chunk, 0, chunk.size)
                 if (count <= 0) continue
-                val samples = FloatArray(count) { index -> pcm[index] / 32768f }
-                active.addAudio(samples, AUDIO_SAMPLE_RATE)
-            }
-        } catch (error: Throwable) {
-            if (recording.get()) {
-                Log.e(TAG, "Microphone capture failed", error)
-                mutableState.value = mutableState.value.copy(
-                    error = error.message ?: error::class.java.simpleName,
-                    status = "마이크 처리 오류",
+                for (index in 0 until count) pcm += chunk[index]
+                val rms = sqrt(
+                    (0 until count).sumOf {
+                        val value = chunk[it].toDouble()
+                        value * value
+                    } / count,
                 )
+                if (rms >= SPEECH_RMS_THRESHOLD) {
+                    speechStarted = true
+                    silentChunks = 0
+                } else if (speechStarted) {
+                    silentChunks++
+                }
+                if (speechStarted && silentChunks >= END_SILENCE_CHUNKS) break
             }
-        } finally {
             recording.set(false)
             runCatching { recorder.stop() }
+            mutableState.value = mutableState.value.copy(
+                listening = false,
+                status = "폰에서 음성을 분석하고 있어요…",
+            )
+            if (!speechStarted || pcm.isEmpty()) {
+                mutableState.value = mutableState.value.copy(
+                    status = "음성을 인식하지 못했습니다.",
+                    error = "음성이 충분히 들리지 않았습니다.",
+                )
+                return
+            }
+            val samples = FloatArray(pcm.size) { pcm[it] / 32768f }
+            val stream = active.createStream()
+            try {
+                stream.acceptWaveform(samples, SAMPLE_RATE)
+                active.decode(stream)
+                val text = active.getResult(stream).text
+                    .replace(Regex("""<\|[^>]+>\|"""), "")
+                    .trim()
+                mutableState.value = mutableState.value.copy(
+                    currentText = text,
+                    completedText = text,
+                    status = if (text.isBlank()) "인식 결과가 없습니다." else "인식 완료: $text",
+                    error = null,
+                )
+                if (text.isNotBlank()) mutableFinalTranscripts.tryEmit(text)
+            } finally {
+                stream.release()
+            }
+        } catch (error: Throwable) {
+            Log.e(TAG, "SenseVoice transcription failed", error)
+            mutableState.value = mutableState.value.copy(
+                listening = false,
+                status = "로컬 음성인식 오류",
+                error = error.message ?: error::class.java.simpleName,
+            )
+        } finally {
+            recording.set(false)
             recorder.release()
             audioRecord = null
-            runCatching { active.stop() }
-            mutableState.value = mutableState.value.copy(listening = false)
         }
     }
 
-    private fun createTranscriber(): Transcriber = Transcriber(
-        listOf(
-            TranscriberOption("max_tokens_per_second", "13.0"),
-        ),
-    ).apply {
-        addListener { event ->
-            event.accept(
-                object : TranscriptEventListener() {
-                    override fun onLineTextChanged(event: TranscriptEvent.LineTextChanged) {
-                        mutableState.value = mutableState.value.copy(
-                            currentText = event.line.text.orEmpty(),
-                        )
-                    }
-
-                    override fun onLineCompleted(event: TranscriptEvent.LineCompleted) {
-                        val text = event.line.text.orEmpty().trim()
-                        if (text.isBlank()) return
-                        Log.i(TAG, "Korean transcript completed: $text")
-                        val previous = mutableState.value.completedText
-                        mutableState.value = mutableState.value.copy(
-                            currentText = "",
-                            completedText = listOf(previous, text)
-                                .filter(String::isNotBlank)
-                                .joinToString("\n"),
-                            status = "인식 완료 · 계속 듣는 중…",
-                        )
-                        mutableFinalTranscripts.tryEmit(text)
-                    }
-
-                    override fun onError(event: TranscriptEvent.Error) {
-                        Log.e(TAG, "Korean transcription error", event.cause)
-                        mutableState.value = mutableState.value.copy(
-                            error = event.cause.message ?: event.cause::class.java.simpleName,
-                            status = "음성인식 오류",
-                        )
-                    }
-                },
-            )
+    private fun downloadIfMissing(
+        source: String,
+        target: File,
+        progressStart: Float,
+        progressEnd: Float,
+    ) {
+        if (target.isFile && target.length() > 0L) return
+        val part = File(target.parentFile, "${target.name}.part")
+        val connection = URL(source).openConnection() as HttpURLConnection
+        connection.connectTimeout = 30_000
+        connection.readTimeout = 120_000
+        connection.instanceFollowRedirects = true
+        connection.connect()
+        check(connection.responseCode in 200..299) {
+            "모델 다운로드 실패: HTTP ${connection.responseCode}"
         }
-    }
-
-    private fun modelDirectory(context: Context): File =
-        File(context.filesDir, MODEL_DIRECTORY)
-
-    private fun readPcm16Wav(bytes: ByteArray): PcmAudio {
-        require(bytes.size >= 44) { "WAV 파일이 너무 짧습니다." }
-        require(String(bytes, 0, 4, Charsets.US_ASCII) == "RIFF")
-        require(String(bytes, 8, 4, Charsets.US_ASCII) == "WAVE")
-        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        var offset = 12
-        var sampleRate = 0
-        var channels = 0
-        var bitsPerSample = 0
-        var dataOffset = -1
-        var dataSize = 0
-        while (offset + 8 <= bytes.size) {
-            val chunkId = String(bytes, offset, 4, Charsets.US_ASCII)
-            val chunkSize = buffer.getInt(offset + 4)
-            val payloadOffset = offset + 8
-            if (chunkSize < 0 || payloadOffset + chunkSize > bytes.size) break
-            when (chunkId) {
-                "fmt " -> {
-                    require(buffer.getShort(payloadOffset).toInt() == 1) {
-                        "PCM WAV만 지원합니다."
-                    }
-                    channels = buffer.getShort(payloadOffset + 2).toInt()
-                    sampleRate = buffer.getInt(payloadOffset + 4)
-                    bitsPerSample = buffer.getShort(payloadOffset + 14).toInt()
-                }
-                "data" -> {
-                    dataOffset = payloadOffset
-                    dataSize = chunkSize
+        val total = connection.contentLengthLong.coerceAtLeast(1L)
+        connection.inputStream.use { input ->
+            part.outputStream().buffered().use { output ->
+                val buffer = ByteArray(256 * 1024)
+                var downloaded = 0L
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    output.write(buffer, 0, count)
+                    downloaded += count
+                    val fraction = (downloaded.toFloat() / total).coerceIn(0f, 1f)
+                    mutableState.value = mutableState.value.copy(
+                        downloading = true,
+                        status = "고정밀 로컬 STT 다운로드 ${(fraction * 100).toInt()}%",
+                        progress = progressStart + (progressEnd - progressStart) * fraction,
+                    )
                 }
             }
-            offset = payloadOffset + chunkSize + (chunkSize and 1)
         }
-        require(sampleRate > 0 && channels == 1 && bitsPerSample == 16) {
-            "16-bit mono PCM WAV가 필요합니다."
-        }
-        require(dataOffset >= 0 && dataSize > 0) { "WAV data 청크가 없습니다." }
-        val samples = FloatArray(dataSize / 2)
-        for (index in samples.indices) {
-            samples[index] = buffer.getShort(dataOffset + index * 2) / 32768f
-        }
-        return PcmAudio(samples, sampleRate)
+        check(part.renameTo(target)) { "다운로드 파일을 확정하지 못했습니다." }
+        connection.disconnect()
     }
 
-    private data class PcmAudio(
-        val samples: FloatArray,
-        val sampleRate: Int,
-    )
+    private fun modelDirectory(context: Context) = File(context.filesDir, MODEL_DIRECTORY)
+    private fun modelFile(context: Context) = File(modelDirectory(context), MODEL_FILE_NAME)
+    private fun tokensFile(context: Context) = File(modelDirectory(context), TOKENS_FILE_NAME)
 
-    private const val TEST_AUDIO_ASSET = "moonshine_test_ko.wav"
-    private const val AUDIO_SAMPLE_RATE = 16_000
-    private const val AUDIO_CHUNK_SAMPLES = 1_600
-    private const val TAG = "MoonshineKorean"
+    private const val MODEL_DIRECTORY = "sensevoice/small-int8-ko"
+    private const val MODEL_FILE_NAME = "model.int8.onnx"
+    private const val TOKENS_FILE_NAME = "tokens.txt"
+    private const val MODEL_URL =
+        "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/model.int8.onnx"
+    private const val TOKENS_URL =
+        "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/resolve/main/tokens.txt"
+    private const val SAMPLE_RATE = 16_000
+    private const val CHUNK_SAMPLES = 1_600
+    private const val MAX_SECONDS = 20
+    private const val SPEECH_RMS_THRESHOLD = 450.0
+    private const val END_SILENCE_CHUNKS = 10
+    private const val TAG = "SenseVoiceKorean"
 }

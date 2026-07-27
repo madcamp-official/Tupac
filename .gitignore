@@ -20,3 +20,4 @@ local.properties
 /eval/models/
 
 __pycache__/
+.native-build/

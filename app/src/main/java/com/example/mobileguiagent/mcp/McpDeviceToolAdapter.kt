@@ -15,6 +15,12 @@ import com.example.mobileguiagent.device.DeviceToolCall
 import com.example.mobileguiagent.device.DeviceToolDefinition
 import com.example.mobileguiagent.device.DeviceToolRegistry
 import com.example.mobileguiagent.device.DeviceToolResult
+import com.example.mobileguiagent.device.GoBackDeviceTool
+import com.example.mobileguiagent.device.GoHomeDeviceTool
+import com.example.mobileguiagent.device.SetTextDeviceTool
+import com.example.mobileguiagent.device.SubmitTextDeviceTool
+import com.example.mobileguiagent.device.SwipeDeviceTool
+import com.example.mobileguiagent.device.TapDeviceTool
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -23,11 +29,15 @@ class McpDeviceToolAdapter(
 ) {
     // MCP에 노출되는 external 이름 <-> 내부 DeviceTool 이름.
     // 새 tool 추가 = 여기 한 줄 + DeviceToolRegistry 등록. (HTTP 서버는 안 건드림)
-    private val externalToInternal = mapOf(
+    private val externalToInternal = linkedMapOf(
         EXTERNAL_SCREENSHOT_NAME to CaptureScreenDeviceTool.NAME,
-        EXTERNAL_BACK_NAME to BackDeviceTool.NAME,
+        EXTERNAL_HOME_NAME to GoHomeDeviceTool.NAME,
+        EXTERNAL_BACK_NAME to GoBackDeviceTool.NAME,
+        EXTERNAL_TAP_NAME to TapDeviceTool.NAME,
+        EXTERNAL_SWIPE_NAME to SwipeDeviceTool.NAME,
         EXTERNAL_SCROLL_NAME to ScrollDeviceTool.NAME,
-        EXTERNAL_TYPE_TEXT_NAME to TypeTextDeviceTool.NAME,
+        EXTERNAL_TYPE_TEXT_NAME to SetTextDeviceTool.NAME,
+        EXTERNAL_SUBMIT_TEXT_NAME to SubmitTextDeviceTool.NAME,
         EXTERNAL_OPEN_SCREEN_NAME to OpenScreenDeviceTool.NAME,
         EXTERNAL_START_TASK_NAME to SystemTaskDeviceTool.NAME,
         EXTERNAL_SYSTEM_ACTION_NAME to SystemActionDeviceTool.NAME,
@@ -59,8 +69,10 @@ class McpDeviceToolAdapter(
                 DeviceToolCall(name = deviceToolName, arguments = arguments),
             )
         ) {
+            is DeviceToolResult.Action -> actionResult(result)
             is DeviceToolResult.Screenshot -> screenshotResult(result)
             is DeviceToolResult.Success -> success(result.message)
+            is DeviceToolResult.UiObservation -> observationResult(result)
             is DeviceToolResult.Error -> error(result.code, result.message)
         }
     }
@@ -95,6 +107,25 @@ class McpDeviceToolAdapter(
         )
         .put("isError", false)
 
+    private fun observationResult(result: DeviceToolResult.UiObservation): JSONObject = JSONObject()
+        .put(
+            "content",
+            JSONArray().put(
+                JSONObject()
+                    .put("type", "text")
+                    .put(
+                        "text",
+                        JSONObject()
+                            .put("success", true)
+                            .put("foreground_package", result.snapshot.packageName)
+                            .put("node_count", result.snapshot.nodes.size)
+                            .put("fingerprint", result.snapshot.fingerprint.hash)
+                            .toString(),
+                    ),
+            ),
+        )
+        .put("isError", false)
+
     private fun success(message: String?): JSONObject = JSONObject()
         .put(
             "content",
@@ -118,6 +149,24 @@ class McpDeviceToolAdapter(
             .put("description", description)
             .put("inputSchema", JSONObject(inputSchema.toString()))
 
+    private fun actionResult(result: DeviceToolResult.Action): JSONObject = JSONObject()
+        .put(
+            "content",
+            JSONArray().put(
+                JSONObject()
+                    .put("type", "text")
+                    .put(
+                        "text",
+                        JSONObject()
+                            .put("success", result.success)
+                            .put("action", result.action)
+                            .put("message", result.message)
+                            .toString(),
+                    ),
+            ),
+        )
+        .put("isError", !result.success)
+
     private fun error(code: String, message: String): JSONObject = JSONObject()
         .put(
             "content",
@@ -138,9 +187,13 @@ class McpDeviceToolAdapter(
 
     companion object {
         const val EXTERNAL_SCREENSHOT_NAME = "device_screenshot"
+        const val EXTERNAL_HOME_NAME = "device_home"
         const val EXTERNAL_BACK_NAME = "device_back"
+        const val EXTERNAL_TAP_NAME = "device_tap"
+        const val EXTERNAL_SWIPE_NAME = "device_swipe"
         const val EXTERNAL_SCROLL_NAME = "device_scroll"
         const val EXTERNAL_TYPE_TEXT_NAME = "device_type_text"
+        const val EXTERNAL_SUBMIT_TEXT_NAME = "device_submit_text"
         const val EXTERNAL_OPEN_SCREEN_NAME = "device_open_screen"
         const val EXTERNAL_START_TASK_NAME = "device_start_task"
         const val EXTERNAL_SYSTEM_ACTION_NAME = "device_system_action"

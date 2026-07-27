@@ -5,10 +5,11 @@ import android.os.Looper
 import com.example.mobileguiagent.accessibility.AgentAccessibilityService
 import com.example.mobileguiagent.device.DeviceToolRegistry
 import com.example.mobileguiagent.model.NodeActionResult
+import com.example.mobileguiagent.model.LocalChatRepository
 import com.example.mobileguiagent.secret.SecretVault
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiSnapshot
-import com.example.mobileguiagent.repository.AgentRepository
+import com.example.mobileguiagent.model.isMeaningfulForAgent
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -27,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Minimal stateless MCP Streamable HTTP server for the Android PoC.
+ * Minimal stateless MCP Streamable HTTP server for Android device control.
  *
  * It implements the MCP initialization, ping, tools/list, and tools/call
  * methods needed by Codex. GET /mcp deliberately returns 405 because this
@@ -249,7 +250,10 @@ class PocketMcpHttpServer(
                             ),
                         ),
                     ),
-            ),
+            )
+            .also { tools ->
+                mcpDeviceToolAdapter.definitions().forEach(tools::put)
+            },
     ).also { result ->
         result.getJSONArray("tools").put(
             JSONObject()
@@ -791,23 +795,20 @@ class PocketMcpHttpServer(
 
         val action = clickSnapshotNodeOnMainThread(target, observed.packageName)
             ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
-
-        // 이중 전략(구현가이드 3장 노드 주소 지정): 라벨 기반 클릭(ACTION_CLICK)이
-        // 실패하면 — 라벨 없는 노드 등 — snapshot에 있는 bounds 중앙을 좌표 탭한다.
-        // 화면이 안 바뀐 건 위에서 이미 검증했으므로 이 좌표를 신뢰할 수 있다.
         var success = action.success
         var method = "node_click"
-        if (!success) {
-            val tapped = tapOnMainThread(
+        if (
+            !success &&
+            target.visibleToUser &&
+            target.bounds.width() > 0 &&
+            target.bounds.height() > 0
+        ) {
+            success = tapOnMainThread(
                 target.bounds.exactCenterX(),
                 target.bounds.exactCenterY(),
             )
-            if (tapped) {
-                success = true
-                method = "coordinate_tap"
-            }
+            if (success) method = "coordinate_tap"
         }
-
         val after = waitForScreenChange(current)
         if (after != null) lastSnapshot.set(after)
         val changed = after?.fingerprint?.hash != current.fingerprint.hash
@@ -832,20 +833,6 @@ class PocketMcpHttpServer(
                 ),
             isError = !success,
         )
-    }
-
-    private fun tapOnMainThread(x: Float, y: Float): Boolean {
-        val service = AgentAccessibilityService.activeService ?: return false
-        val result = AtomicBoolean(false)
-        val latch = CountDownLatch(1)
-        Handler(Looper.getMainLooper()).post {
-            service.tap(x, y) { completed ->
-                result.set(completed)
-                latch.countDown()
-            }
-        }
-        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        return result.get()
     }
 
     private fun toolError(code: String, message: String): JSONObject = toolResult(
@@ -875,6 +862,20 @@ class PocketMcpHttpServer(
         return result.get()
     }
 
+    private fun tapOnMainThread(x: Float, y: Float): Boolean {
+        val service = AgentAccessibilityService.activeService ?: return false
+        val success = AtomicBoolean(false)
+        val latch = CountDownLatch(1)
+        Handler(Looper.getMainLooper()).post {
+            service.tap(x, y) { completed ->
+                success.set(completed)
+                latch.countDown()
+            }
+        }
+        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        return success.get()
+    }
+
     private fun waitForScreenChange(before: UiSnapshot): UiSnapshot? {
         val deadline = System.currentTimeMillis() + ACTION_VERIFY_TIMEOUT_MS
         var latest: UiSnapshot? = null
@@ -895,51 +896,23 @@ class PocketMcpHttpServer(
     }
 
     private fun deviceStatus(): JSONObject {
-        val state = AgentRepository.state.value
+        val snapshot = captureSnapshotOnMainThread()
         return JSONObject()
             .put("success", true)
             .put("server", SERVER_NAME)
             .put("server_version", SERVER_VERSION)
             .put("accessibility_connected", AgentAccessibilityService.activeService != null)
-            .put("foreground_package", state.foregroundPackage)
-            .put("agent_running", state.running)
+            .put("foreground_package", snapshot?.packageName.orEmpty())
+            .put("agent_running", LocalChatRepository.state.value.generating)
             .put("timestamp_ms", System.currentTimeMillis())
     }
 
-    /**
-     * LLM에 보낼 노드만 남기는 필터.
-     *
-     * 아래 중 하나라도 참이면 "의미 있는 노드"로 보고 유지한다:
-     *  - 직접 동작 가능: clickable / editable / scrollable
-     *  - 정보가 있음: text(보이는 글자) 또는 content_description(아이콘 등 접근성 라벨)
-     *
-     * 걸러지는 건 라벨도 동작도 없는 순수 레이아웃 컨테이너·장식 뷰뿐이다.
-     * 놓침(recall) 방지를 우선해 라벨 없는 clickable도 남긴다.
-     *
-     * 추가로 visibleToUser=false(가려졌거나 화면 밖, 예: 열린 폴더 뒤 workspace,
-     * 스크롤 밖 리스트 항목, 옆 홈페이지 peek)는 제외한다. 화면에 실제로 없는 걸
-     * LLM에 보여주면 착각하므로.
-     */
-    private fun isMeaningfulNode(node: UiNode): Boolean =
-        node.visibleToUser &&
-            (
-                node.clickable ||
-                    node.editable ||
-                    node.scrollable ||
-                    // 슬라이더는 clickable도 editable도 아니고 라벨도 없는 경우가
-                    // 많다(밝기 슬라이더가 그렇다). 여기 없으면 조작할 수 있는데도
-                    // 모델에게 아예 안 보인다.
-                    node.range != null ||
-                    !node.text.isNullOrBlank() ||
-                    !node.contentDescription.isNullOrBlank()
-                )
-
     private fun snapshotJson(snapshot: UiSnapshot, maxNodes: Int): JSONObject {
-        // 필터는 반환용 목록에만 적용. 저장 원본(lastSnapshot)과 snapshot_id(fingerprint)는
-        // 그대로라 click_node 정합성 검사는 영향받지 않는다. node.id도 원래 값을 유지한다.
-        val meaningful = snapshot.nodes.filter(::isMeaningfulNode)
+        // Keep the complete snapshot in lastSnapshot so node ids and stale
+        // checks remain stable. Only the payload sent to an agent is filtered.
+        val meaningfulNodes = snapshot.nodes.filter { node -> node.isMeaningfulForAgent() }
         val nodes = JSONArray()
-        meaningful.take(maxNodes).forEach { node ->
+        meaningfulNodes.take(maxNodes).forEach { node ->
             nodes.put(
                 JSONObject()
                     .put("id", node.id)
@@ -954,6 +927,9 @@ class PocketMcpHttpServer(
                     .put("scrollable", node.scrollable)
                     .put("enabled", node.enabled)
                     .put("checked", node.checked ?: JSONObject.NULL)
+                    .put("focused", node.focused)
+                    .put("input_type", node.inputType)
+                    .put("visible_to_user", node.visibleToUser)
                     .put(
                         "range",
                         node.range?.let { span ->
@@ -980,9 +956,9 @@ class PocketMcpHttpServer(
             .put("captured_at_ms", snapshot.capturedAtMillis)
             .put("package_name", snapshot.packageName)
             .put("node_count", snapshot.nodes.size)
-            .put("meaningful_node_count", meaningful.size)
+            .put("meaningful_node_count", meaningfulNodes.size)
             .put("returned_node_count", nodes.length())
-            .put("truncated", meaningful.size > nodes.length())
+            .put("truncated", meaningfulNodes.size > nodes.length())
             .put("nodes", nodes)
     }
 
