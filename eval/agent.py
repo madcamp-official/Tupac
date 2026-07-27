@@ -47,6 +47,7 @@ MCP_URL = f"http://127.0.0.1:{MCP_PORT}/mcp"
 
 MAX_PROMPT_NODES = 45
 STALL_LIMIT = 3          # 화면이 이만큼 연속으로 안 바뀌면 중단한다
+STRAY_LIMIT = 2          # 짚어준 단계와 다른 행동이 이만큼 이어지면 중단한다
 WAIT_SECONDS = 2.0       # wait 행동이 쉬는 시간
 
 
@@ -289,7 +290,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
     # 계획은 "무엇을 채울지"만 담는다. "어느 칸인지"는 매 스텝 다시 찾는다 —
     # 노드 번호는 스냅샷마다 새로 매겨져서 미리 박아두면 어긋난다.
     order, want_submit, filled, submitted = [], False, set(), False
-    plan, current = [], None
+    plan, current, strays = [], None, 0
     history = []
     previous_id = None
     pending = None          # 직전 행동의 이력. 화면이 바뀌었는지는 아직 모른다.
@@ -353,8 +354,16 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         started = time.time()
         try:
             if handoff:
-                plan, current = assign.steps_now(
+                plan, current, blocked = assign.steps_now(
                     observation, secrets, fields, order, want_submit, filled, submitted)
+                # 짚어줄 줄이 없으면 모델에게 묻지 않는다. 기기 안 모델의 일은
+                # 짚어준 줄을 실행하는 것뿐이고, 그 밖의 판단은 여기서 멈춘다.
+                if blocked:
+                    print(f"{'=' * 60}\n{blocked}")
+                    print(f"현재 화면: [{observation['package_name']}] "
+                          f"{describe(observation)}")
+                    print("→ 예상과 다른 화면입니다. 직접 확인하세요.")
+                    return
                 # 계획이 끝났으면 모델에게 물을 것이 없다. 여기서 마무리한다.
                 # 실측: 다 끝난 뒤 오류 대화상자를 만난 1.2B가 "type node_12 값 /
                 # tap node_18 / wait / done" 같은 문자열을 반복해 뱉었다. 남은
@@ -431,13 +440,27 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         print(f"     결과: {outcome}")
         # 계획대로 한 단계를 마쳤으면 다음으로. 어긋난 행동은 진행으로 세지 않으므로
         # 같은 단계를 다시 보여주게 된다.
-        if handoff and outcome.startswith("성공") and current:
-            if (action["action"] == current["action"]
-                    and action.get("node_id") == current.get("node_id")):
+        if handoff and current:
+            matched = (action["action"] == current["action"]
+                       and action.get("node_id") == current.get("node_id"))
+            if matched and outcome.startswith("성공"):
                 if current["action"] == "type":
                     filled.add(current["field"])
                 elif current["action"] == "tap":
                     submitted = True
+                strays = 0
+            elif not matched:
+                # 짚어준 줄과 다른 행동을 했다. 성공했든 실패했든 어긋난 것이다
+                # (성공한 것만 세면 "type node_18"처럼 실패하는 엉뚱한 행동이
+                # 무한히 반복된다). 몇 번 이어지면 멈춘다 — 모델이 계획 밖에서
+                # 화면을 헤집게 두지 않는다.
+                strays += 1
+                if strays >= STRAY_LIMIT:
+                    print(f"{'=' * 60}\n짚어준 단계와 다른 행동이 {strays}번 이어져 중단합니다.")
+                    print(f"  짚어준 것: {scrub(current['line'], secrets)}")
+                    print(f"현재 화면: [{observation['package_name']}] "
+                          f"{describe(observation)}")
+                    return
         # 아직 history에 넣지 않는다. 다음 observe로 화면 변화를 확인한 뒤 붙인다.
         # 이력은 다음 스텝 프롬프트로 들어가고, 클라우드로 되돌아갈 수도 있다.
         # detail·outcome은 이미 scrub을 거쳤지만 한 번 더 확인한다.

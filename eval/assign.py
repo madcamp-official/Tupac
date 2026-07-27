@@ -132,23 +132,31 @@ def plan_fields(observation, values, field_hint):
 
 
 def steps_now(observation, values, field_hint, order, want_submit, done, submitted):
-    """지금 화면 기준으로 만든 단계 목록과, 그중 지금 할 단계.
+    """지금 화면 기준의 단계 목록, 지금 할 단계, 막힌 이유.
 
-    돌려주는 각 단계의 line은 모델이 그대로 답하면 되는 한 줄이다.
+    기기 안 모델의 일은 "짚어준 한 줄을 실행하기" 하나로 한정한다. 그래서 짚어줄
+    줄이 없으면 — 계획한 칸이 화면에 없거나 제출 버튼을 못 찾으면 — 모델에게
+    묻지 않고 막힌 이유를 돌려준다. 부르는 쪽이 거기서 멈춘다.
+
+    앞선 단계를 건너뛰고 뒤 단계를 짚지 않는다. 아이디를 못 넣었는데 비밀번호로
+    넘어가거나, 값을 덜 채운 채 제출을 누르는 일이 생긴다.
     """
     entries = field_entries(field_hint)
     found = {field: node for node, field in input_targets(observation, set(values), entries)}
 
-    steps, current = [], None
+    steps, current, blocked = [], None, None
     for field in order:
         node = found.get(field)
-        line = f"type {node['id']} {values[field]}" if node else f"(화면에서 {field} 칸을 못 찾음)"
+        line = f"type {node['id']} {values[field]}" if node else f"(화면에 {field} 칸이 없음)"
         step = {"action": "type", "field": field, "node_id": node["id"] if node else None,
                 "line": line, "why": f"{field} — {label_of(node)[:20] if node else '못 찾음'}",
                 "state": "done" if field in done else "todo"}
         steps.append(step)
-        if current is None and step["state"] == "todo" and node:
-            current = step
+        if current is None and blocked is None and step["state"] == "todo":
+            if node:
+                current = step
+            else:
+                blocked = f"{field}를 넣을 칸이 지금 화면에 없습니다"
 
     if want_submit:
         button = submit_button(observation)
@@ -158,11 +166,14 @@ def steps_now(observation, values, field_hint, order, want_submit, done, submitt
                 "why": f"제출 — {label_of(button)[:20] if button else '못 찾음'}",
                 "state": "done" if submitted else "todo"}
         steps.append(step)
-        if current is None and not submitted and button:
-            current = step
+        if current is None and blocked is None and not submitted:
+            if button:
+                current = step
+            else:
+                blocked = "제출 버튼을 화면에서 찾지 못했습니다"
 
     steps.append({"action": "done", "field": None, "node_id": None,
                   "line": "done", "why": "마무리", "state": "todo"})
-    if current is None:
+    if current is None and blocked is None:
         current = steps[-1]
-    return steps, current
+    return steps, current, blocked
