@@ -4,6 +4,7 @@ import android.util.Base64
 import com.example.mobileguiagent.device.BackDeviceTool
 import com.example.mobileguiagent.device.CaptureScreenDeviceTool
 import com.example.mobileguiagent.device.LaunchAppDeviceTool
+import com.example.mobileguiagent.device.FillSecretsDeviceTool
 import com.example.mobileguiagent.device.ListFieldsDeviceTool
 import com.example.mobileguiagent.device.ListAppsDeviceTool
 import com.example.mobileguiagent.device.OpenScreenDeviceTool
@@ -34,6 +35,7 @@ class McpDeviceToolAdapter(
         EXTERNAL_LAUNCH_APP_NAME to LaunchAppDeviceTool.NAME,
         EXTERNAL_LIST_APPS_NAME to ListAppsDeviceTool.NAME,
         EXTERNAL_LIST_FIELDS_NAME to ListFieldsDeviceTool.NAME,
+        EXTERNAL_FILL_SECRETS_NAME to FillSecretsDeviceTool.NAME,
     )
 
     /** tools/list에 실을 이 어댑터가 담당하는 모든 tool의 MCP 정의. */
@@ -147,5 +149,6 @@ class McpDeviceToolAdapter(
         const val EXTERNAL_LAUNCH_APP_NAME = "device_launch_app"
         const val EXTERNAL_LIST_APPS_NAME = "device_list_apps"
         const val EXTERNAL_LIST_FIELDS_NAME = "device_list_fields"
+        const val EXTERNAL_FILL_SECRETS_NAME = "device_fill_secrets"
     }
 }
