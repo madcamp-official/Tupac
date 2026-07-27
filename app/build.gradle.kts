@@ -34,6 +34,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+    testOptions {
+        // UiNode가 android.graphics.Rect를 들고 있다. 유닛 테스트의 android.jar는
+        // 껍데기라 그대로 부르면 "Stub!" 예외가 난다. 여기서 재는 것은 칸 배정
+        // 규칙이고 bounds는 쓰지 않으므로, 기본값을 돌려주게 해서 통과시킨다.
+        unitTests.isReturnDefaultValues = true
+    }
+
     buildFeatures {
         compose = true
     }
