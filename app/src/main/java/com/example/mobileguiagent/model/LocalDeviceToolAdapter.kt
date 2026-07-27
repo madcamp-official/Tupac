@@ -11,6 +11,10 @@ import org.json.JSONObject
 class LocalDeviceToolAdapter(
     private val registry: DeviceToolRegistry = DeviceToolRegistry(),
 ) : DeviceToolExecutor {
+    private val jsonOutputAdapter = JsonToolCallAdapter()
+    private val exaoneOutputAdapter = ExaoneToolCallAdapter(registry.definitions)
+    private val lfm2OutputAdapter = Lfm2ToolCallAdapter()
+
     /**
      * Serializes common Device Tools into the constrained JSON protocol shown
      * to an on-device model. This is a local-model adapter, not an MCP client.
@@ -65,7 +69,26 @@ class LocalDeviceToolAdapter(
         excludedToolNames: Set<String> = emptySet(),
     ): String = when (protocol) {
         ModelToolCallProtocol.JSON -> promptSection(excludedToolNames)
+        ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK ->
+            exaonePromptSection(excludedToolNames)
         ModelToolCallProtocol.LFM2_NATIVE -> lfm2PromptSection(excludedToolNames)
+    }
+
+    /**
+     * EXAONE still receives canonical JSON as its primary protocol. The final
+     * line documents a very small fallback language for checkpoints whose
+     * reasoning exhausts the JSON output budget.
+     */
+    private fun exaonePromptSection(
+        excludedToolNames: Set<String>,
+    ): String = buildString {
+        append(promptSection(excludedToolNames))
+        appendLine()
+        appendLine("Do not output reasoning or <think> blocks.")
+        append(
+            "If and only if valid JSON cannot be completed, return one compact fallback line: " +
+                "tool_name positional_arguments. Never mix JSON and the fallback line.",
+        )
     }
 
     /**
@@ -99,145 +122,49 @@ class LocalDeviceToolAdapter(
         )
     }
 
-    fun parseToolCall(modelOutput: String): DeviceToolCall? {
-        // Parse only the first complete JSON object. GUI models occasionally
-        // generate a second call before decoding stops; joining from the first
-        // opening brace to the last closing brace would make the boundary
-        // ambiguous and could execute a later action by accident.
-        val jsonText = firstBalancedJsonObject(modelOutput)
-            ?: return parseLfm2ToolCall(modelOutput)
-        val parsed = runCatching { JSONObject(jsonText) }.getOrNull()
-            ?: return recoverMalformedDirectClick(jsonText)
-                ?: parseLfm2ToolCall(modelOutput)
-        val name = parsed.requestedToolName()
+    fun parseToolCall(
+        modelOutput: String,
+        protocol: ModelToolCallProtocol = ModelToolCallProtocol.JSON,
+    ): DeviceToolCall? {
+        val parsed = outputAdapter(protocol).parse(modelOutput) ?: return null
+        val name = parsed.name
         if (name == GUI_OWL_AGGREGATE_TOOL_NAME) {
             // GUI-Owl exposes one aggregate mobile_use function. It is never
             // executable itself: translate only exact, supported action shapes
             // into registered Device Tools.
-            return normalizeGuiOwlCall(parsed)
-        }
-        if (name in GUI_OWL_DIRECT_ACTION_NAMES) {
-            return normalizeGuiOwlDirectAction(
-                action = checkNotNull(name),
-                envelope = parsed,
-            )
+            return parsed.envelope?.let(::normalizeGuiOwlCall)
         }
         val definition = registry.definitions.firstOrNull { it.name == name }
-            ?: return null
-        val arguments = normalizedArguments(
-            rawArguments = parsed.opt("arguments"),
-            definition = definition,
-        )
-        return DeviceToolCall(name = checkNotNull(name), arguments = arguments)
-    }
-
-    /**
-     * Parses only LFM2's bounded one-function grammar:
-     * `[tool_name(field="value", count=1)]`.
-     *
-     * This is intentionally not a Python evaluator. It accepts registered tool
-     * names and flat JSON scalar arguments only, then applies the same schema
-     * validation as JSON model output before returning an executable call.
-     */
-    private fun parseLfm2ToolCall(modelOutput: String): DeviceToolCall? {
-        val match = LFM2_TOOL_CALL_PATTERN.find(modelOutput) ?: return null
-        val name = match.groupValues[1]
-        val arguments = parseLfm2Arguments(match.groupValues[2]) ?: return null
-        return registeredCall(name = name, arguments = arguments)
-    }
-
-    private fun parseLfm2Arguments(rawArguments: String): JSONObject? {
-        val source = rawArguments.trim()
-        if (source.isEmpty()) return JSONObject()
-        val output = JSONObject()
-        var cursor = 0
-        while (cursor < source.length) {
-            val match = LFM2_ARGUMENT_PATTERN.find(source, cursor) ?: return null
-            if (match.range.first != cursor) return null
-            val key = match.groupValues[1]
-            val rawValue = match.groupValues[2]
-            val value: Any = when {
-                rawValue.startsWith('"') ->
-                    runCatching {
-                        JSONObject("""{"value":$rawValue}""").getString("value")
-                    }.getOrNull() ?: return null
-                rawValue == "true" -> true
-                rawValue == "false" -> false
-                rawValue == "null" -> return null
-                '.' in rawValue -> rawValue.toDoubleOrNull() ?: return null
-                else -> rawValue.toLongOrNull() ?: return null
-            }
-            output.put(key, value)
-            cursor = match.range.last + 1
+        val canonicalCall = definition?.let { registeredDefinition ->
+            DeviceToolCall(
+                name = name,
+                arguments = normalizedArguments(
+                    rawArguments = parsed.arguments,
+                    definition = registeredDefinition,
+                ),
+            )
         }
-        return output
-    }
-
-    /**
-     * Finds the first balanced JSON object without treating braces inside a
-     * JSON string as structural delimiters.
-     *
-     * Escaped quotes and escaped backslashes are consumed as part of the
-     * string. An unterminated string/object has no safe boundary and is
-     * rejected instead of being joined to a later object.
-     */
-    private fun firstBalancedJsonObject(output: String): String? {
-        var startIndex = -1
-        var depth = 0
-        var insideString = false
-        var escaped = false
-
-        output.forEachIndexed { index, character ->
-            if (startIndex < 0) {
-                if (character == '{') {
-                    startIndex = index
-                    depth = 1
-                }
-                return@forEachIndexed
-            }
-
-            if (insideString) {
-                when {
-                    escaped -> escaped = false
-                    character == '\\' -> escaped = true
-                    character == '"' -> insideString = false
-                }
-                return@forEachIndexed
-            }
-
-            when (character) {
-                '"' -> insideString = true
-                '{' -> depth += 1
-                '}' -> {
-                    depth -= 1
-                    if (depth == 0) {
-                        return output.substring(startIndex, index + 1)
-                    }
-                    if (depth < 0) return null
-                }
-            }
+        // "swipe" and "wait" are both canonical tool names and GUI-Owl direct
+        // aliases. Prefer a schema-valid canonical call; only reinterpret an
+        // invalid shape when its envelope matches GUI-Owl's coordinate grammar.
+        if (canonicalCall != null && validationError(canonicalCall) == null) {
+            return canonicalCall
         }
-        return null
+        if (name in GUI_OWL_DIRECT_ACTION_NAMES) {
+            val guiOwlCall = parsed.envelope?.let { envelope ->
+                normalizeGuiOwlDirectAction(action = name, envelope = envelope)
+            }
+            if (guiOwlCall != null) return guiOwlCall
+        }
+        return canonicalCall
     }
 
-    /**
-     * Q4 GUI models occasionally omit only the square brackets around a
-     * visually grounded click pair (`"coordinate":436,934`). Recover that one
-     * exact direct-click shape and nothing else. The controller still scales,
-     * bounds-checks, and validates the point against the current screenshot/UI
-     * before the registered tap tool can execute.
-     */
-    private fun recoverMalformedDirectClick(output: String): DeviceToolCall? {
-        val match = MALFORMED_DIRECT_CLICK_PATTERN.matchEntire(output.trim()) ?: return null
-        val x = match.groupValues[1].toDoubleOrNull()?.takeIf(Double::isFinite)
-            ?: return null
-        val y = match.groupValues[2].toDoubleOrNull()?.takeIf(Double::isFinite)
-            ?: return null
-        return registeredCall(
-            name = "tap",
-            arguments = JSONObject().put("x", x).put("y", y),
-        )
-    }
+    private fun outputAdapter(protocol: ModelToolCallProtocol): ToolCallOutputAdapter =
+        when (protocol) {
+            ModelToolCallProtocol.JSON -> jsonOutputAdapter
+            ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK -> exaoneOutputAdapter
+            ModelToolCallProtocol.LFM2_NATIVE -> lfm2OutputAdapter
+        }
 
     override fun execute(call: DeviceToolCall): DeviceToolResult = registry.execute(call)
 
@@ -392,32 +319,10 @@ class LocalDeviceToolAdapter(
      * uses this only to recover into the GUI workflow; unknown tools are never
      * executed and never exposed as assistant/TTS output.
      */
-    fun requestedToolName(modelOutput: String): String? {
-        val jsonText = firstBalancedJsonObject(modelOutput)
-            ?: return LFM2_TOOL_CALL_PATTERN.find(modelOutput)?.groupValues?.get(1)
-        return runCatching {
-            JSONObject(jsonText)
-                .requestedToolName()
-        }.getOrNull()
-    }
-
-    /**
-     * Accepts both the app's legacy `tool` key and Qwen's native `name` key.
-     * Conflicting keys are rejected so a wrapper cannot select one tool for
-     * parsing and another for diagnostics.
-     */
-    private fun JSONObject.requestedToolName(): String? {
-        val legacyName = optString("tool").trim()
-        val qwenName = optString("name").trim()
-        if (
-            legacyName.isNotEmpty() &&
-            qwenName.isNotEmpty() &&
-            legacyName != qwenName
-        ) {
-            return null
-        }
-        return legacyName.ifEmpty { qwenName }.takeIf(String::isNotBlank)
-    }
+    fun requestedToolName(
+        modelOutput: String,
+        protocol: ModelToolCallProtocol = ModelToolCallProtocol.JSON,
+    ): String? = outputAdapter(protocol).requestedToolName(modelOutput)
 
     private fun normalizeGuiOwlCall(envelope: JSONObject): DeviceToolCall? {
         if (!envelope.hasExactlyKeys("name", "arguments")) return null
@@ -628,7 +533,9 @@ class LocalDeviceToolAdapter(
         if (!goal.isNullOrBlank() && visibleWordsOverlap(label, goal)) score += 1_000
         score += when (node.semanticRole()) {
             "text_input" -> 900
-            "search_input" -> 800
+            // A launcher search field must outrank dozens of app labels that
+            // all happen to overlap a generic goal such as "open an app".
+            "search_input" -> 1_800
             "app_collection" -> 600
             "search" -> 500
             "voice_search" -> 300
@@ -689,16 +596,6 @@ class LocalDeviceToolAdapter(
             "system_button",
             "wait",
             "terminate",
-        )
-        private val MALFORMED_DIRECT_CLICK_PATTERN = Regex(
-            """\{\s*"(?:tool|name)"\s*:\s*"click"\s*,\s*"arguments"\s*:\s*\{\s*"coordinate"\s*:\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\}\s*\}""",
-        )
-        private val LFM2_TOOL_CALL_PATTERN = Regex(
-            """(?:<\|tool_call_start\|>\s*)?\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\((.*?)\)\s*]\s*(?:<\|tool_call_end\|>)?""",
-            setOf(RegexOption.DOT_MATCHES_ALL),
-        )
-        private val LFM2_ARGUMENT_PATTERN = Regex(
-            """\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?)\s*(?:,\s*|$)""",
         )
         private val SEMANTIC_CONTROL_ID_HINTS = listOf(
             "search",

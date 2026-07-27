@@ -199,6 +199,8 @@ class OnDeviceToolModelBenchmarkInstrumentedTest {
             val protocolPrompt = when (profile.toolCallProtocol) {
                 com.example.mobileguiagent.model.ModelToolCallProtocol.JSON ->
                     SYSTEM_PROMPT
+                com.example.mobileguiagent.model.ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK ->
+                    EXAONE_SYSTEM_PROMPT
                 com.example.mobileguiagent.model.ModelToolCallProtocol.LFM2_NATIVE ->
                     LFM2_SYSTEM_PROMPT
             }
@@ -221,7 +223,7 @@ class OnDeviceToolModelBenchmarkInstrumentedTest {
             ).trim()
             val inferenceMs = SystemClock.elapsedRealtime() - started
             totalInferenceMs += inferenceMs
-            val call = adapter.parseToolCall(output)
+            val call = adapter.parseToolCall(output, profile.toolCallProtocol)
             val valid = call != null && adapter.validationError(call) == null
             val correct = valid && benchmarkCase.matches(checkNotNull(call))
             if (valid) validCalls += 1
@@ -289,6 +291,16 @@ class OnDeviceToolModelBenchmarkInstrumentedTest {
             Use one available function call and no explanatory prose.
             If an external GUI task has no current UI observation, use observe_ui.
             Never invent a node id that is absent from the current UI nodes.
+        """.trimIndent()
+
+        val EXAONE_SYSTEM_PROMPT = """
+            You are the local tool planner for an Android GUI agent.
+            Select exactly one next action for the current request.
+            Do not reason aloud and do not output <think> blocks.
+            Prefer one registered JSON tool call with no prose.
+            If JSON cannot be completed, return one compact fallback command line.
+            Never invent a node id that is absent from the current UI nodes.
+            Never claim an action happened without calling a tool.
         """.trimIndent()
 
         val CASES = listOf(

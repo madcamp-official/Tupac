@@ -451,10 +451,13 @@ class LocalAgentController(
                     )
                 }
             val predictLength =
-                if (modelProfile.plannerPromptStyle == ModelPlannerPromptStyle.GUI_OWL) {
-                    GUI_OWL_PLANNER_TOKEN_LIMIT
-                } else {
-                    PLANNER_TOKEN_LIMIT
+                when {
+                    modelProfile.plannerPromptStyle == ModelPlannerPromptStyle.GUI_OWL ->
+                        GUI_OWL_PLANNER_TOKEN_LIMIT
+                    modelProfile.toolCallProtocol ==
+                        ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK ->
+                        EXAONE_PLANNER_TOKEN_LIMIT
+                    else -> PLANNER_TOKEN_LIMIT
                 }
             val modelOutput = if (imageBackedAttempt) {
                 screenshotEncodedThisStep = true
@@ -499,7 +502,10 @@ class LocalAgentController(
                     modelOutput.take(LOG_TEXT_LIMIT),
             )
 
-            val parsedCall = toolAdapter.parseToolCall(modelOutput)
+            val parsedCall = toolAdapter.parseToolCall(
+                modelOutput,
+                modelProfile.toolCallProtocol,
+            )
             if (parsedCall != null) {
                 val deviceCall = modelCallToDeviceCoordinates(
                     call = parsedCall,
@@ -635,8 +641,9 @@ For goals such as going Home, the launcher foreground package proves completion.
         )
         appendLine()
         append(
-            toolAdapter.promptSection(
-                plannerExcludedTools(
+            toolAdapter.promptSectionFor(
+                protocol = modelProfile.toolCallProtocol,
+                excludedToolNames = plannerExcludedTools(
                     history = history,
                     goal = goal,
                     controllerPackage = context.packageName,
@@ -1557,7 +1564,10 @@ For goals such as going Home, the launcher foreground package proves completion.
         output: String,
         modelProfile: OnDeviceModelProfile,
     ): String {
-        val requestedTool = toolAdapter.requestedToolName(output)
+        val requestedTool = toolAdapter.requestedToolName(
+            output,
+            modelProfile.toolCallProtocol,
+        )
         if (modelProfile.plannerPromptStyle == ModelPlannerPromptStyle.GUI_OWL) {
             return when (requestedTool) {
                 in GUI_OWL_OUTPUT_TOOL_NAMES ->
@@ -1580,8 +1590,15 @@ For goals such as going Home, the launcher foreground package proves completion.
             return "Completion must call the registered finish tool, and only after the " +
                 "current screenshot visibly proves the original goal."
         }
-        return "The response was not one valid registered tool-call JSON object. " +
-            "Return exactly one tool call and no prose or XML."
+        return if (
+            modelProfile.toolCallProtocol == ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK
+        ) {
+            "The response was neither canonical tool-call JSON nor one valid compact " +
+                "EXAONE fallback line. Return one action without reasoning or <think> blocks."
+        } else {
+            "The response was not one valid registered tool-call JSON object. " +
+                "Return exactly one tool call and no prose or XML."
+        }
     }
 
     private data class AgentStepRecord(
@@ -1601,6 +1618,7 @@ For goals such as going Home, the launcher foreground package proves completion.
         private const val ACTION_SETTLE_MS = 350L
         private const val PLANNER_TOKEN_LIMIT = 256
         private const val GUI_OWL_PLANNER_TOKEN_LIMIT = 128
+        private const val EXAONE_PLANNER_TOKEN_LIMIT = 128
         private const val LOG_TEXT_LIMIT = 800
         private const val MAX_VISUAL_PROPOSAL_LENGTH = 400
         private const val MIN_STABLE_SCREEN_SEMANTIC_NODES = 3

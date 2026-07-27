@@ -149,13 +149,14 @@ object LocalChatRepository {
                     modelProfile = resolvedModel.profile,
                 )
                 val responseTokenLimit =
-                    if (
+                    when {
                         resolvedModel.profile.plannerPromptStyle ==
-                        ModelPlannerPromptStyle.GUI_OWL
-                    ) {
-                        GUI_OWL_RESPONSE_TOKEN_LIMIT
-                    } else {
-                        RESPONSE_TOKEN_LIMIT
+                            ModelPlannerPromptStyle.GUI_OWL ->
+                            GUI_OWL_RESPONSE_TOKEN_LIMIT
+                        resolvedModel.profile.toolCallProtocol ==
+                            ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK ->
+                            EXAONE_RESPONSE_TOKEN_LIMIT
+                        else -> RESPONSE_TOKEN_LIMIT
                     }
                 val rawResponse = engine.generate(
                     // 모델이 사용 가능한 툴과 JSON 호출 형식을 알 수 있도록
@@ -166,8 +167,14 @@ object LocalChatRepository {
                 ).ifBlank {
                     "응답을 생성하지 못했습니다."
                 }
-                val requestedToolName = toolAdapter.requestedToolName(rawResponse)
-                var initialToolCall = toolAdapter.parseToolCall(rawResponse)
+                val requestedToolName = toolAdapter.requestedToolName(
+                    rawResponse,
+                    resolvedModel.profile.toolCallProtocol,
+                )
+                var initialToolCall = toolAdapter.parseToolCall(
+                    rawResponse,
+                    resolvedModel.profile.toolCallProtocol,
+                )
                 if (
                     initialToolCall != null &&
                     toolAdapter.validationError(initialToolCall) != null
@@ -232,9 +239,15 @@ object LocalChatRepository {
                         "${resolvedModel.profile.displayName} protocol retry response: " +
                             correctedOutput.take(LOG_TEXT_LIMIT),
                     )
-                    initialToolCall = toolAdapter.parseToolCall(correctedOutput)
+                    initialToolCall = toolAdapter.parseToolCall(
+                        correctedOutput,
+                        resolvedModel.profile.toolCallProtocol,
+                    )
                     val correctedUnknownTool =
-                        toolAdapter.requestedToolName(correctedOutput)
+                        toolAdapter.requestedToolName(
+                            correctedOutput,
+                            resolvedModel.profile.toolCallProtocol,
+                        )
                     if (initialToolCall == null && correctedUnknownTool != null) {
                         Log.w(
                             TAG,
@@ -637,6 +650,12 @@ to a tool name.""",
             return@buildString
         }
         appendLine(SYSTEM_PROMPT)
+        if (
+            modelProfile.toolCallProtocol ==
+            ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK
+        ) {
+            appendLine("Do not output reasoning or <think> blocks.")
+        }
         appendLine()
         appendLine("LOADED_SKILL:")
         appendLine(
@@ -646,12 +665,13 @@ to a tool name.""",
             ),
         )
         appendLine()
-        append(toolAdapter.promptSection())
+        append(toolAdapter.promptSectionFor(modelProfile.toolCallProtocol))
     }
 
     private const val MAX_CONTEXT_MESSAGES = 8
     private const val RESPONSE_TOKEN_LIMIT = 384
     private const val GUI_OWL_RESPONSE_TOKEN_LIMIT = 96
+    private const val EXAONE_RESPONSE_TOKEN_LIMIT = 192
     private const val SYSTEM_PROMPT =
         """You are a helpful assistant running locally on an Android phone.
 Reply naturally and concisely in the same language as the user.

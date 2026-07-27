@@ -4,6 +4,7 @@ import android.graphics.Rect
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.mobileguiagent.device.DeviceToolResult
 import com.example.mobileguiagent.model.LocalDeviceToolAdapter
+import com.example.mobileguiagent.model.ModelToolCallProtocol
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiSnapshot
 import org.junit.Assert.assertEquals
@@ -106,6 +107,64 @@ class LocalDeviceToolAdapterInstrumentedTest {
         assertEquals(436.0, call?.arguments?.getDouble("x"))
         assertEquals(934.0, call?.arguments?.getDouble("y"))
         assertNull(call?.let(adapter::validationError))
+    }
+
+    @Test
+    fun exaoneUsesJsonBeforeDslFallback() {
+        val call = adapter.parseToolCall(
+            """
+            <think>화면에서 Wi-Fi 노드를 선택한다.</think>
+            {"tool":"tap_node","arguments":{"node_id":"node_7"}}
+            """.trimIndent(),
+            ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK,
+        )
+
+        assertEquals("tap_node", call?.name)
+        assertEquals("node_7", call?.arguments?.getString("node_id"))
+        assertNull(call?.let(adapter::validationError))
+    }
+
+    @Test
+    fun exaoneFallsBackToBoundedSingleArgumentDsl() {
+        val call = adapter.parseToolCall(
+            "tap_node node_7",
+            ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK,
+        )
+
+        assertEquals("tap_node", call?.name)
+        assertEquals("node_7", call?.arguments?.getString("node_id"))
+        assertNull(call?.let(adapter::validationError))
+    }
+
+    @Test
+    fun exaoneFallsBackToSchemaOrderedSwipeDsl() {
+        val call = adapter.parseToolCall(
+            "swipe 540 1800 540 500 400",
+            ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK,
+        )
+
+        assertEquals("swipe", call?.name)
+        assertEquals(540L, call?.arguments?.getLong("start_x"))
+        assertEquals(1800L, call?.arguments?.getLong("start_y"))
+        assertEquals(540L, call?.arguments?.getLong("end_x"))
+        assertEquals(500L, call?.arguments?.getLong("end_y"))
+        assertEquals(400L, call?.arguments?.getLong("duration_ms"))
+        assertNull(call?.let(adapter::validationError))
+    }
+
+    @Test
+    fun ordinaryJsonProtocolNeverExecutesDsl() {
+        assertNull(adapter.parseToolCall("tap_node node_7"))
+    }
+
+    @Test
+    fun exaoneRejectsUnfinishedThinkingWithoutFinalAnswer() {
+        assertNull(
+            adapter.parseToolCall(
+                "<think>아직 어느 노드를 누를지 고민 중",
+                ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK,
+            ),
+        )
     }
 
     @Test

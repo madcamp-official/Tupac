@@ -22,6 +22,8 @@ enum class ModelPlannerPromptStyle {
 
 enum class ModelToolCallProtocol {
     JSON,
+    /** Canonical JSON first, then a bounded EXAONE-only DSL fallback. */
+    EXAONE_JSON_DSL_FALLBACK,
     LFM2_NATIVE,
 }
 
@@ -157,7 +159,10 @@ object OnDeviceModelProfileResolver {
         coordinateSpace = ModelCoordinateSpace.DEVICE_PIXELS,
         preferImagePlanning = false,
         plannerPromptStyle = ModelPlannerPromptStyle.GENERIC,
-        toolCallProtocol = ModelToolCallProtocol.JSON,
+        toolCallProtocol = ModelToolCallProtocol.EXAONE_JSON_DSL_FALLBACK,
+        // The current JNI bridge cannot pass EXAONE's enable_thinking=false
+        // chat-template argument. Use prompt suppression and reject/strip
+        // completed think blocks instead of sending Qwen's /no_think token.
         disableThinking = false,
     )
 
