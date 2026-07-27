@@ -65,11 +65,18 @@ def scrub(text, secrets):
     return text
 
 
-def describe(observation):
-    """화면에 보이는 라벨을 한 줄로. 사람이 어느 화면인지 알아보게만 하면 된다."""
+def describe(observation, secrets=None):
+    """화면에 보이는 라벨을 한 줄로. 사람이 어느 화면인지 알아보게만 하면 된다.
+
+    금고 값을 가리는 건 이 줄이 사람에게만 보인다는 보장이 없어서다. 방금 채운
+    폼을 그대로 읽으면 이름과 주소가 통째로 들어간다(실측: 마지막 화면 줄에
+    "01000000000 / 서울시 ..."이 그대로 찍혔다). 이 문자열은 MCP 응답으로도
+    나가므로 로그와 같은 기준으로 가린다.
+    """
     labels = [(n.get("text") or n.get("content_description") or n.get("hint") or "").strip()
               for n in observation.get("nodes", [])]
-    return " / ".join(label for label in labels if label)[:150]
+    line = " / ".join(label for label in labels if label)[:150]
+    return scrub(line, secrets) if secrets else line
 
 
 def mcp(name, arguments):
@@ -364,6 +371,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
     plan, current, strays, scrolls = [], None, 0, 0
     hunt = "down"            # 남은 칸을 찾아 훑는 방향. 바닥에 닿으면 뒤집는다
     history = []
+    verdict = []           # stray()가 남기는 한 줄 결론. run()이 그대로 돌려준다.
 
     def stray(what):
         """짚어준 줄과 다른 답이 이어지면 멈춘다. 멈춰야 하면 True.
@@ -378,7 +386,8 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         print(f"{'=' * 60}\n짚어준 단계와 다른 응답이 {strays}번 이어져 중단합니다 ({what}).")
         if current:
             print(f"  짚어준 것: {scrub(current['line'], secrets)}")
-        print(f"현재 화면: [{observation['package_name']}] {describe(observation)}")
+        print(f"현재 화면: [{observation['package_name']}] {describe(observation, secrets)}")
+        verdict.append("중단: 짚어준 단계와 다른 응답이 이어졌습니다")
         return True
 
     previous_id = None
@@ -389,7 +398,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         observation = mcp("device_observe", {"max_nodes": 500})
         if "snapshot_id" not in observation:
             print("observe 실패:", observation)
-            return
+            return "중단: 화면을 읽지 못했습니다"
 
         # 화면 변화 판정을 여기서 한다. 행동 직후에 폰에게 물어보면 전환
         # 애니메이션 중이라 부정확하고, scroll·back은 애초에 알려주지도 않는다.
@@ -417,9 +426,9 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         if stalled >= STALL_LIMIT:
             print(f"{'=' * 60}\n{stalled}스텝 연속으로 화면이 전혀 바뀌지 않아 중단합니다.")
             print(f"마지막 화면: [{observation['package_name']}] "
-                  f"{describe(observation)}")
+                  f"{describe(observation, secrets)}")
             print("→ 폰이 잠겨 있거나, 에이전트가 조작할 수 없는 화면일 수 있습니다.")
-            return
+            return f"중단: {stalled}스텝 연속으로 화면이 바뀌지 않았습니다"
 
         # 라우팅. 민감한 화면은 기기 밖으로 내보내지 않는다. 판정 단위가 화면인
         # 이유는 observe가 화면 텍스트를 통째로 주기 때문이다. type만 로컬로
@@ -488,9 +497,9 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
                 if blocked:
                     print(f"{'=' * 60}\n{blocked}")
                     print(f"현재 화면: [{observation['package_name']}] "
-                          f"{describe(observation)}")
+                          f"{describe(observation, secrets)}")
                     print("→ 예상과 다른 화면입니다. 직접 확인하세요.")
-                    return
+                    return f"중단: {blocked}"
                 # 계획이 끝났으면 모델에게 물을 것이 없다. 여기서 마무리한다.
                 # 실측: 다 끝난 뒤 오류 대화상자를 만난 1.2B가 "type node_12 값 /
                 # tap node_18 / wait / done" 같은 문자열을 반복해 뱉었다. 남은
@@ -502,9 +511,9 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
                         print(f"→ {', '.join(left)}는 넣을 칸을 못 찾아 비워뒀습니다"
                               + (" (제출도 하지 않았습니다)" if want_submit else ""))
                     print(f"현재 화면: [{observation['package_name']}] "
-                          f"{describe(observation)}")
+                          f"{describe(observation, secrets)}")
                     print("→ 결과를 화면에서 확인하세요.")
-                    return
+                    return f"완료: {did}"
                 context = skills.handoff_text(plan, current)
             else:
                 context = reference
@@ -569,7 +578,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         if action["action"] == "done":
             who = "스킬이" if raw == "(skill)" else "모델이"
             print(f"{'=' * 60}\n{who} 마무리했습니다. 화면을 확인하세요.")
-            return
+            return f"완료: {who} 목표를 마쳤습니다"
 
         # 값 입력 구간에서는 짚어준 단계만 실행한다. 모델의 답은 "그 단계를 할
         # 차례가 맞다"는 확인으로만 쓰고, 실제로 넣을 값은 code가 들고 있는 것을
@@ -580,7 +589,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
                     or action.get("node_id") != current.get("node_id")):
                 print(f"     결과: 건너뜀 — 짚어준 것은 {scrub(current['line'], secrets)}")
                 if stray("다른 단계를 지목"):
-                    return
+                    return verdict[-1]
                 history.append(f"step{step}: 계획과 다른 답 → 실행하지 않음")
                 continue
             action = assign.action_for(current, secrets)
@@ -591,7 +600,7 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         # 말하게 시키면 못 한다(실측: 1.2B는 done을 좀처럼 내지 않는다).
         if action.get("final") and outcome.startswith("성공"):
             print(f"{'=' * 60}\n요청한 작업을 실행했습니다. 화면을 확인하세요.")
-            return
+            return f"완료: {outcome}"
         if handoff and current and outcome.startswith("성공"):
             if current["action"] == "type":
                 filled.add(current["field"])
@@ -609,8 +618,9 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
     # 못 하는 경우가 잦아, 마지막 화면을 보여주고 사람이 판단하게 한다.
     final = mcp("device_observe", {"max_nodes": 500})
     print(f"{'=' * 60}\n{max_steps}스텝을 모두 사용했습니다 (모델이 done을 선언하지 않음).")
-    print(f"마지막 화면: [{final.get('package_name', '?')}] {describe(final)}")
+    print(f"마지막 화면: [{final.get('package_name', '?')}] {describe(final, secrets)}")
     print("→ 목표가 달성됐는지 폰 화면으로 확인하세요.")
+    return f"미완: {max_steps}스텝을 모두 썼지만 모델이 완료를 선언하지 않았습니다"
 
 
 def parse_argv(argv):
