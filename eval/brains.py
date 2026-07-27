@@ -42,7 +42,7 @@ GEMINI_URL = os.environ.get("GEMINI_URL") or (
 MAX_QUOTA_WAIT = 90          # 429 재시도에 쓸 누적 대기 상한(초)
 
 ACTIONS = ("tap", "scroll", "type", "back", "open", "task", "launch",
-           "list_apps", "fill", "skill", "wait", "done")
+           "list_apps", "fill", "wait", "done")
 DIRECTIONS = ("up", "down", "left", "right")
 
 
@@ -207,7 +207,7 @@ def parse_action(raw):
     # 쉼표)을 못 지켜 구조가 무너지는 일이 잦아, 가장 쓰기 쉬운 형식을 먼저 본다.
     first_line = raw.strip().splitlines()[0].strip() if raw.strip() else ""
     match = re.match(
-        r"^[\s\-*`]*(tap|scroll|type|back|open|task|launch|fill|skill|wait|done)\b[:\s]*(.*)$",
+        r"^[\s\-*`]*(tap|scroll|type|back|open|task|launch|fill|wait|done)\b[:\s]*(.*)$",
         first_line, re.IGNORECASE)
     if match:
         verb, arg = match.group(1).lower(), match.group(2).strip().strip('"\'`')
@@ -240,9 +240,6 @@ def parse_action(raw):
             parts = arg.split()
             if len(parts) >= 2 and parts[0].startswith("node_"):
                 return {"action": "fill", "node_id": parts[0], "field": parts[1]}
-        elif verb == "skill":
-            if arg:
-                return {"action": "skill", "name": arg.split()[0]}
         else:
             return {"action": verb}
 
@@ -317,8 +314,7 @@ class LocalBrain:
              if (n.get("text") or n.get("content_description"))),
             "node_1",
         )
-        options = [f"tap {example}", "scroll down", "scroll up", "back",
-                   "skill 절차서이름", "done"]
+        options = [f"tap {example}", "scroll down", "scroll up", "back", "done"]
         if any(n["editable"] for n in observation["nodes"]):
             options.insert(1, "type 넣을글자")
             options.insert(2, "fill node_번호 필드이름")
@@ -394,8 +390,6 @@ CLOUD_RULES = """행동은 다음뿐입니다. 위쪽 네 개를 먼저 고려�
               값이 필요한 작업은 value에, 문자 내용이나 알람 이름은 text에 씁니다.
 - launch    : app 필수. 설치된 앱을 이름으로 실행합니다(예: app="카카오톡").
 - list_apps : 어떤 앱이 깔려 있는지 모를 때. app에 검색어를 넣으면 걸러 봅니다.
-- skill  : name 필수. 로그인·개인정보 폼처럼 아는 상황을 만나면 먼저 절차서를
-             불러 그대로 따르세요. 절차서 없이 개인정보 칸을 건드리지 마세요.
 - fill   : node_id와 field 필수. 폰에 저장된 개인정보를 그 입력창에 넣습니다.
              값은 폰 안에서 처리되며 당신은 값을 보지 못합니다.
 - wait   : 화면 전환이나 처리 결과를 기다립니다.
@@ -448,11 +442,10 @@ CLOUD_SCHEMA = {
         "value": {"type": "STRING"},
         "app": {"type": "STRING"},
         "field": {"type": "STRING"},
-        "name": {"type": "STRING"},
     },
     "required": ["reason", "action"],
     "propertyOrdering": ["reason", "action", "node_id", "direction", "text", "screen",
-                         "task", "value", "app", "field", "name"],
+                         "task", "value", "app", "field"],
 }
 
 

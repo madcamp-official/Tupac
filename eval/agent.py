@@ -254,8 +254,9 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
     print(f"목표: {goal}  (brain: {cloud.name}{note})\n{'=' * 60}")
     shortcuts = shortcut_hint()      # 폰이 지원하는 바로가기. 스텝마다 바뀌지 않는다.
     fields = field_hint()            # 금고가 다루는 필드. 절차서에 함께 싣는다.
-    catalog = skills.load()          # 절차서 목록. 모델이 skill 이름 으로 불러온다.
-    active_skill = None
+    # 절차서는 호출 대상이 아니라 참고 문서다. 전체 본문을 처음부터 프롬프트에
+    # 싣고, 어느 절차가 지금 상황에 맞는지는 모델이 읽고 판단한다.
+    reference = skills.reference_text(skills.load(), fields, no_submit)
     history = []
     previous_id = None
     pending = None          # 직전 행동의 이력. 화면이 바뀌었는지는 아직 모른다.
@@ -311,18 +312,10 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
         if brain.online and reason:
             sys.exit(f"[중단] 민감 화면({reason})을 온라인 모델로 보내려 했습니다.")
 
-        # 스킬(절차서) 문맥. 목록은 늘 보여주고, 모델이 불러온 절차서가 있으면
-        # 그 본문을 매 스텝 싣는다. 판단 주체는 모델이다 — 코드는 절차서를
-        # 건네줄 뿐, 화면을 보고 가로채지 않는다.
-        extra_parts = [skills.catalog_text(catalog)]
-        if active_skill:
-            extra_parts.append(skills.active_text(
-                active_skill, catalog[active_skill], fields, no_submit))
-        extra = "\n\n".join(part for part in extra_parts if part)
-
         started = time.time()
         try:
-            action, raw = brain.decide(goal, screen, observation, history, shortcuts, extra)
+            action, raw = brain.decide(goal, screen, observation, history,
+                                       shortcuts, reference)
         except brains.BrainError as error:
             sys.exit(f"모델 호출 실패: {error}\n  {brain.hint(error.status)}")
         elapsed = time.time() - started
@@ -342,19 +335,6 @@ def run(goal, cloud, fallback, max_steps, all_nodes, dry, no_submit=False):
               f"  ({observation['meaningful_node_count']}노드, {elapsed:.1f}s)")
         if action.get("reason"):
             print(f"     이유: {action['reason'][:100]}")
-
-        if action["action"] == "skill":
-            name = action.get("name", "")
-            if name in catalog:
-                active_skill = name
-                outcome = f"성공: {name} 절차서를 불러왔습니다. 위 절차를 따르세요"
-            else:
-                outcome = (f"실패: {name} 절차서는 없습니다. "
-                           f"있는 것: {', '.join(catalog)}")
-            print(f"     결과: {outcome}")
-            pending = f"step{step}: skill {name} → {outcome}"
-            pending_kind = "skill"
-            continue
 
         if action["action"] == "done":
             who = "스킬이" if raw == "(skill)" else "모델이"
