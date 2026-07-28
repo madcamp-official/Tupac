@@ -46,6 +46,7 @@ import urllib.error
 import urllib.request
 
 PHONE_URL = os.environ.get("PHONE_MCP_URL", "http://127.0.0.1:9911/mcp")
+PROTOCOL = "2025-11-25"
 TIMEOUT_SECONDS = 180        # 폼을 채우는 도구는 화면을 여러 번 오가서 오래 걸린다
 
 
@@ -65,6 +66,63 @@ def forward(body, token):
         # 폰은 알림(id 없는 요청)에 202를 주고 본문을 비운다. 그때는 돌려줄 것이 없다.
         raw = response.read()
         return raw if raw.strip() else None
+
+
+def hello(request_id):
+    """initialize에는 우리가 직접 답한다.
+
+    폰이 꺼져 있거나 릴레이가 안 떠 있으면 이 첫 인사가 실패하고, 그러면
+    Claude Desktop은 그 자리에서 연결을 끊는다. 재시도하지 않는다. 대화창에는
+    도구가 하나도 없는 상태로 남아 "저는 폰을 조작할 수 없어요"만 나오고, 진짜
+    이유는 로그를 뒤져야 나온다 — 오늘 세 번 그렇게 헤맸다.
+
+    첫 인사는 서버 소개일 뿐이라 폰이 없어도 답할 수 있다. 여기서 답해두면
+    커넥터가 살아 있고, 도구를 부를 때 무엇이 잘못됐는지가 대화창에 보인다.
+    폰이 돌아오면 그때부터 그냥 된다.
+    """
+    return json.dumps({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {
+            "protocolVersion": PROTOCOL,
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {"name": "Tupac Phone (relay)", "version": "0.1.0"},
+            "instructions": (
+                "Android phone control, reached through a relay. The tool list and "
+                "everything else comes from the phone itself. If a tool call fails, "
+                "the error says what to check — read it out to the person instead of "
+                "concluding you cannot control the phone."
+            ),
+        },
+    }, ensure_ascii=False).encode()
+
+
+def passthrough(body):
+    """릴레이가 준 본문이 그대로 내보낼 만한 JSON-RPC 오류면 그것을, 아니면 None."""
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    problem = parsed.get("error")
+    if isinstance(problem, dict) and "message" in problem:
+        return body
+    return None
+
+
+def describe(error):
+    """HTTP 오류를 사람이 고칠 수 있는 말로.
+
+    401을 "폰에 닿지 못했습니다"라고 적었더니 실제로 헤맸다. 토큰 오타 하나였는데
+    릴레이를 다시 띄우고 폰을 재시작하느라 시간을 썼다. 무엇이 틀렸는지 말해야 한다.
+    """
+    if error.code == 401:
+        return ("릴레이 토큰이 맞지 않습니다. 릴레이를 띄운 RELAY_TOKEN과 "
+                "이 커넥터의 TOKEN이 같은 값인지 확인하세요.")
+    if error.code == 404:
+        return f"릴레이에 그런 주소가 없습니다: {PHONE_URL}"
+    return f"HTTP {error.code} — {error.reason}"
 
 
 def unreachable(request_id, reason):
@@ -97,19 +155,32 @@ def main():
             continue
         # id는 오류를 돌려줄 때만 쓴다. 못 읽어도 넘기는 것은 그대로 넘긴다.
         try:
-            request_id = json.loads(line).get("id")
+            parsed = json.loads(line)
+            request_id = parsed.get("id")
+            method = parsed.get("method")
         except json.JSONDecodeError:
-            request_id = None
+            request_id, method = None, None
 
         # 알림(id 없는 요청)에는 답하지 않는다. adb로 갈 때는 폰이 202에 빈 본문을
         # 주지만, 릴레이는 기다리는 자리를 풀려고 반드시 무언가를 돌려준다. 그것을
         # 그대로 내보내면 묻지도 않은 답이 Claude 쪽으로 간다.
         notification = request_id is None
 
+        # 첫 인사는 폰에 묻지 않고 여기서 답한다. 이유는 hello()에 적어뒀다.
+        if method == "initialize":
+            sys.stdout.buffer.write(hello(request_id) + b"\n")
+            sys.stdout.buffer.flush()
+            continue
+
         try:
             answer = forward(line.encode(), token)
         except urllib.error.HTTPError as error:
-            answer = unreachable(request_id, f"HTTP {error.code} — {error.reason}")
+            # 릴레이가 JSON-RPC 오류를 담아 4xx/5xx로 돌려주는 경우가 있다(폰이
+            # 안 붙어 있을 때가 그렇다). 그건 우리가 지어낸 말보다 정확하므로
+            # 그대로 넘긴다. 다만 JSON이라고 다 넘기면 안 된다 — 릴레이의 401은
+            # {"error": "..."} 꼴이라 JSON-RPC가 아니고, 그대로 보내면 받는 쪽이
+            # 읽지 못한다. 형식을 갖춘 것만 통과시킨다.
+            answer = passthrough(error.read()) or unreachable(request_id, describe(error))
         except OSError as error:
             # URLError만 잡으면 안 된다. adb forward는 살아 있는데 폰 쪽이 끊긴
             # 경우(기기 offline, 앱 종료) ConnectionResetError가 난다. 둘 다 OSError다.
