@@ -19,6 +19,7 @@ import com.example.mobileguiagent.R
 
 class PocketMcpService : Service() {
     private var server: PocketMcpHttpServer? = null
+    private var relay: RelayClient? = null
     private lateinit var authToken: String
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
@@ -46,6 +47,7 @@ class PocketMcpService : Service() {
                 server = httpServer
                 registerNetworkCallback()
                 refreshEndpoints()
+                startRelay(httpServer)
             }
         }.onFailure { error ->
             McpServerRepository.onError(
@@ -58,7 +60,22 @@ class PocketMcpService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
         START_STICKY
 
+    /**
+     * 릴레이는 주소가 설정돼 있을 때만 띄운다. 기본은 안 붙는 것이다 — 앱이 밖으로
+     * 접속하는 일은 사용자가 정한 다음에 일어나야 한다.
+     */
+    private fun startRelay(httpServer: PocketMcpHttpServer) {
+        val config = RelaySettings.read(this) ?: return
+        relay = RelayClient(
+            baseUrl = config.baseUrl,
+            token = config.token,
+            handle = httpServer::handle,
+        ).also { it.start() }
+    }
+
     override fun onDestroy() {
+        relay?.stop()
+        relay = null
         runCatching {
             getSystemService(ConnectivityManager::class.java)
                 .unregisterNetworkCallback(networkCallback)

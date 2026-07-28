@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  평문 HTTP는 개발용 로컬 주소에만 연다.
+
+  릴레이에 붙으려면 나가는 접속이 필요한데, 안드로이드는 API 28부터 평문을
+  기본으로 막는다. 개발 중에는 릴레이가 맥북에 있고 adb reverse로 127.0.0.1을
+  타므로 그 주소만 예외로 둔다.
+
+  진짜 릴레이는 HTTPS여야 한다. 평문으로 두면 토큰이 그대로 보이고, 토큰을
+  아는 사람은 이 폰을 조작할 수 있다. 그래서 여기 목록을 넓히지 않는다.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

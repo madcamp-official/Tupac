@@ -52,6 +52,11 @@ import com.example.mobileguiagent.ui.theme.MobileGUIAgentTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 릴레이 주소를 화면 없이 넣을 수 있게 열어둔다. 아직 설정 화면이 없어서인데,
+        // 여기 값이 있어야만 앱이 밖으로 접속한다. 기본은 아무 데도 안 붙는 것이다.
+        //   adb shell am start -n com.example.mobileguiagent/.MainActivity \
+        //     --es relay_url http://127.0.0.1:8790 --es relay_token test
+        com.example.mobileguiagent.mcp.RelaySettings.applyFrom(this, intent)
         LocalChatRepository.refresh(applicationContext)
         McpServerRepository.start(applicationContext)
 

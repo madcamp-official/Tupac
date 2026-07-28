@@ -181,6 +181,20 @@ class PocketMcpHttpServer(
         }
     }
 
+    /**
+     * 요청 하나를 처리한다. HTTP로 들어오든 릴레이로 들어오든 여기를 지난다.
+     *
+     * 둘이 각자 처리기를 두면 어느 길로 들어왔느냐에 따라 도구 목록이나 동작이
+     * 달라진다. 들어오는 길은 둘이지만 답하는 곳은 하나여야 한다.
+     *
+     * 알림(id 없는 요청)에는 null. 부르는 쪽이 답을 보내지 않는다.
+     */
+    fun handle(request: JSONObject): JSONObject? {
+        onRequest(request.optString("method"))
+        if (!request.has("id")) return null
+        return dispatchRequest(request)
+    }
+
     private fun dispatchRequest(request: JSONObject): JSONObject {
         val id = request.opt("id")
         val method = request.optString("method")
