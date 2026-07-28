@@ -57,8 +57,16 @@ class PocketMcpService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
-        START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 설정이 바뀌면 붙어 있던 릴레이를 끊고 새 주소로 다시 붙는다. 이게 없으면
+        // 서비스가 처음 뜰 때 읽은 주소를 계속 쓴다.
+        if (intent?.action == ACTION_RECONNECT_RELAY) {
+            relay?.stop()
+            relay = null
+            server?.let(::startRelay)
+        }
+        return START_STICKY
+    }
 
     /**
      * 릴레이는 주소가 설정돼 있을 때만 띄운다. 기본은 안 붙는 것이다 — 앱이 밖으로
@@ -66,6 +74,7 @@ class PocketMcpService : Service() {
      */
     private fun startRelay(httpServer: PocketMcpHttpServer) {
         val config = RelaySettings.read(this) ?: return
+        android.util.Log.i("PocketMcpService", "릴레이 설정을 읽었습니다: ${config.baseUrl}")
         relay = RelayClient(
             baseUrl = config.baseUrl,
             token = config.token,
@@ -145,6 +154,9 @@ class PocketMcpService : Service() {
         getSystemService(NotificationManager::class.java)
 
     companion object {
+        /** 설정이 바뀌었으니 릴레이를 다시 붙이라는 신호. */
+        const val ACTION_RECONNECT_RELAY = "com.example.mobileguiagent.RECONNECT_RELAY"
+
         const val DEFAULT_PORT = 8765
         private const val CHANNEL_ID = "pocket_mcp_server"
         private const val NOTIFICATION_ID = 8765

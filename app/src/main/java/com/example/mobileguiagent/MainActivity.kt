@@ -1,5 +1,6 @@
 package com.example.mobileguiagent
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -56,7 +57,7 @@ class MainActivity : ComponentActivity() {
         // 여기 값이 있어야만 앱이 밖으로 접속한다. 기본은 아무 데도 안 붙는 것이다.
         //   adb shell am start -n com.example.mobileguiagent/.MainActivity \
         //     --es relay_url http://127.0.0.1:8790 --es relay_token test
-        com.example.mobileguiagent.mcp.RelaySettings.applyFrom(this, intent)
+        applyRelaySettings(intent)
         LocalChatRepository.refresh(applicationContext)
         McpServerRepository.start(applicationContext)
 
@@ -85,6 +86,26 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * 이미 떠 있는 앱에 인텐트가 오면 onCreate가 아니라 여기로 온다. 실측으로
+     * "Activity not started, intent has been delivered to currently running
+     * top-most instance"가 나면서 설정이 조용히 버려졌다.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyRelaySettings(intent)
+    }
+
+    /** 설정이 바뀌었으면 서비스에게 알린다. 안 알리면 옛 주소로 계속 붙는다. */
+    private fun applyRelaySettings(intent: Intent?) {
+        if (!com.example.mobileguiagent.mcp.RelaySettings.applyFrom(this, intent)) return
+        startService(
+            Intent(this, com.example.mobileguiagent.mcp.PocketMcpService::class.java)
+                .setAction(com.example.mobileguiagent.mcp.PocketMcpService.ACTION_RECONNECT_RELAY),
+        )
     }
 
     override fun onResume() {
