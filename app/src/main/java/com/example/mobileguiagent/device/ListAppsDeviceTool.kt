@@ -34,7 +34,14 @@ object ListAppsDeviceTool : DeviceTool {
     )
 
     override fun execute(arguments: JSONObject): DeviceToolResult {
-        val query = arguments.optString("query").trim().lowercase()
+        val rawQuery = arguments.optString("query").trim()
+        // "네이버"로 물어도 "NAVER"가 걸려야 한다. 두 이름이 같은 앱을
+        // 가리킨다는 걸 아는 것은 여기뿐이다.
+        val queries = if (rawQuery.isEmpty()) {
+            emptyList()
+        } else {
+            AppAliases.expand(rawQuery).map { it.lowercase() }
+        }
 
         val service = AgentAccessibilityService.activeService
             ?: return DeviceToolResult.Error(
@@ -44,14 +51,16 @@ object ListAppsDeviceTool : DeviceTool {
 
         val matched = LaunchAppDeviceTool.launchableApps(service.packageManager)
             .map { (label, _) -> label }
-            .filter { label -> query.isEmpty() || label.lowercase().contains(query) }
+            .filter { label ->
+                queries.isEmpty() || queries.any { query -> label.lowercase().contains(query) }
+            }
 
         if (matched.isEmpty()) {
             return DeviceToolResult.Success(
-                message = if (query.isEmpty()) {
+                message = if (rawQuery.isEmpty()) {
                     "설치된 앱을 찾지 못했습니다."
                 } else {
-                    "\"$query\"에 해당하는 앱이 없습니다."
+                    "\"$rawQuery\"에 해당하는 앱이 없습니다."
                 },
             )
         }

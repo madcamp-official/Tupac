@@ -105,16 +105,30 @@ object LaunchAppDeviceTool : DeviceTool {
      * 정확히 같은 이름 > 시작이 같음 > 포함. 공백과 대소문자는 무시한다.
      *
      * "카카오톡"과 "카카오 톡"처럼 띄어쓰기만 다른 경우가 흔해서 공백을 지우고 본다.
+     *
+     * 원래 검색어로 다 돌고 나서야 별칭으로 넘어간다. 화면 이름 "NAVER 지도"가
+     * 검색어 "네이버"의 앞부분과 우연히 겹치는 것보다, 실제로 "네이버"라 적힌
+     * 앱이 있다면 그게 항상 먼저여야 한다.
      */
     private fun bestMatch(
         apps: List<Pair<String, String>>,
         query: String,
     ): Pair<String, String>? {
-        val needle = query.normalize()
-        return apps.firstOrNull { (label, _) -> label.normalize() == needle }
-            ?: apps.firstOrNull { (label, _) -> label.normalize().startsWith(needle) }
-            ?: apps.firstOrNull { (label, _) -> label.normalize().contains(needle) }
-            ?: apps.firstOrNull { (_, packageName) -> packageName.normalize().contains(needle) }
+        val candidates = AppAliases.expand(query).map { it.normalize() }
+        candidates.forEach { needle ->
+            apps.firstOrNull { (label, _) -> label.normalize() == needle }?.let { return it }
+        }
+        candidates.forEach { needle ->
+            apps.firstOrNull { (label, _) -> label.normalize().startsWith(needle) }?.let { return it }
+        }
+        candidates.forEach { needle ->
+            apps.firstOrNull { (label, _) -> label.normalize().contains(needle) }?.let { return it }
+        }
+        candidates.forEach { needle ->
+            apps.firstOrNull { (_, packageName) -> packageName.normalize().contains(needle) }
+                ?.let { return it }
+        }
+        return null
     }
 
     /**
