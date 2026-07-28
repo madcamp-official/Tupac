@@ -15,7 +15,7 @@
     이유다(cases.py). 깨지면 그 줄이 그대로 실패 사유로 나온다.
 
     모델의 판단 자체(어느 node를 골라야 하는가)는 여기서 재지 않는다. 그건
-    uitree.py의 데이터셋이 맡는다. 여기는 모델을 부르기 전과 후의 code다.
+    실기기에서 재야 한다. 여기는 모델을 부르기 전과 후의 code다.
 
 사용:
   python3 eval/check.py              # 전부 검사
@@ -238,7 +238,7 @@ CHECKS = {
 def record_screen(name):
     """지금 폰 화면을 fixtures/에 저장한다. 손으로 만든 화면을 실물로 바꿀 때.
 
-    uitree.py의 dump와 형식을 맞춘다. 같은 파일을 양쪽에서 읽을 수 있어야 한다.
+    device_observe가 돌려주는 형식과 맞춘다. 실기기 화면을 그대로 갈아끼울 수 있어야 한다.
     """
     observation = agent.mcp("device_observe", {"max_nodes": 500})
     if "snapshot_id" not in observation:
