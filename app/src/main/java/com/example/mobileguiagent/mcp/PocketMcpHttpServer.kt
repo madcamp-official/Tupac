@@ -285,7 +285,8 @@ class PocketMcpHttpServer(
                     .put("name", "device_observe")
                     .put(
                         "description",
-                        "Reads the current Android accessibility UI tree. This tool has no side effects.",
+                        "Reads the current Android screen as one line per node. " +
+                            "This tool has no side effects. " + ScreenLines.LEGEND,
                     )
                     .put(
                         "inputSchema",
@@ -998,46 +999,19 @@ class PocketMcpHttpServer(
         // 두 겹이다. ScreenPrivacy는 형식이 뚜렷한 것(주민번호, 카드번호)을 잡고,
         // FilledSecrets는 우리가 방금 넣어서 알고 있는 값을 잡는다. 아이디처럼
         // 아무 형식도 아닌 값은 뒤엣것만이 알아본다.
-        fun clean(value: String?): Any =
-            value?.let { FilledSecrets.mask(ScreenPrivacy.redact(it, snapshot.packageName, nodeCount)) }
-                ?: JSONObject.NULL
+        fun clean(value: String): String =
+            FilledSecrets.mask(ScreenPrivacy.redact(value, snapshot.packageName, nodeCount))
 
-        val nodes = JSONArray()
-        meaningful.take(maxNodes).forEach { node ->
-            nodes.put(
-                JSONObject()
-                    .put("id", node.id)
-                    .put("text", clean(node.text))
-                    .put("content_description", clean(node.contentDescription))
-                    .put("hint", clean(node.hint))
-                    .put("class_name", node.className ?: JSONObject.NULL)
-                    .put("view_id", node.viewId ?: JSONObject.NULL)
-                    .put("clickable", node.clickable)
-                    .put("editable", node.editable)
-                    .put("password", node.password)
-                    .put("scrollable", node.scrollable)
-                    .put("enabled", node.enabled)
-                    .put("checked", node.checked ?: JSONObject.NULL)
-                    .put(
-                        "range",
-                        node.range?.let { span ->
-                            JSONObject()
-                                .put("min", span.min)
-                                .put("max", span.max)
-                                .put("current", span.current)
-                        } ?: JSONObject.NULL,
-                    )
-                    .put("depth", node.depth)
-                    .put(
-                        "bounds",
-                        JSONObject()
-                            .put("left", node.bounds.left)
-                            .put("top", node.bounds.top)
-                            .put("right", node.bounds.right)
-                            .put("bottom", node.bounds.bottom),
-                    ),
-            )
+        val shown = meaningful.take(maxNodes)
+        // 라벨은 세 곳에 흩어져 있다. 빈 칸일 때는 hint만이 그 칸이 무엇인지
+        // 알려주고, 값이 들어가면 text가 그 값이 된다. 셋 중 있는 것을 쓴다.
+        val screen = ScreenLines.render(shown) { node ->
+            listOfNotNull(node.text, node.contentDescription, node.hint)
+                .map(::clean)
+                .firstOrNull { it.isNotBlank() }
+                .orEmpty()
         }
+
         // 은행·결제·인증 앱은 화면을 통째로 내주지 않는다. 거기서는 눈에 보이는
         // 것 자체가 잔액과 거래내역이고, 밖에서 볼 이유가 없다. 노드를 다듬어
         // 내보내는 것으로는 부족해서 응답 자체를 거절한다.
@@ -1056,9 +1030,9 @@ class PocketMcpHttpServer(
             .put("package_name", snapshot.packageName)
             .put("node_count", snapshot.nodes.size)
             .put("meaningful_node_count", meaningful.size)
-            .put("returned_node_count", nodes.length())
-            .put("truncated", meaningful.size > nodes.length())
-            .put("nodes", nodes)
+            .put("returned_node_count", shown.size)
+            .put("truncated", meaningful.size > shown.size)
+            .put("screen", screen)
     }
 
     private fun captureSnapshotOnMainThread(): UiSnapshot? {
