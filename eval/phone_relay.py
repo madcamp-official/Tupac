@@ -4,16 +4,22 @@
 전부 앱이 내놓는다. 그러니 Claude는 앱하고만 이야기하면 된다 — 문제는 닿는
 길뿐이다.
 
-    Claude Desktop ──stdio──▶ 이 파일 ──HTTP──▶ 폰 앱 (adb forward를 타고)
+    Claude Desktop ──stdio──▶ 이 파일 ──HTTP──▶ 폰 앱
                    ◀────────           ◀────────
 
 Claude Desktop은 로컬 프로세스를 띄워 표준 입출력으로 말한다. 폰은 HTTP로
 말한다. 그 사이를 줄 단위로 옮기는 것이 전부다. 요청을 읽지도, 고치지도,
 판단하지도 않는다 — 그래서 "연산은 폰에서 한다"는 말이 그대로 유지된다.
 
-이건 개발용 연결이다. adb를 거치므로 맥북에 폰이 붙어 있어야 하고, Claude
-Desktop도 그 맥북에 있어야 한다. 어디서나 되게 하려면 폰이 밖으로 접속해
-대기하는 릴레이 서버가 따로 있어야 한다.
+폰에 닿는 길이 둘이다. 바꾸는 것은 주소뿐이라 이 파일은 어느 쪽인지 모른다.
+
+  adb    맥북에 폰이 붙어 있어야 한다. 개발 중에는 이쪽이 빠르다.
+             adb forward tcp:9911 tcp:8765
+             PHONE_MCP_URL=http://127.0.0.1:9911/mcp   (기본값)
+
+  릴레이  폰이 릴레이로 나가서 대기한다. 케이블이 필요 없다.
+             PHONE_MCP_URL=https://<릴레이 주소>/rpc
+             TOKEN 은 폰 토큰이 아니라 릴레이 토큰이다
 
 붙이는 법 (Claude Desktop > 설정 > 개발자 > 구성 파일 편집):
 
@@ -22,14 +28,16 @@ Desktop도 그 맥북에 있어야 한다. 어디서나 되게 하려면 폰이 
         "tupac-phone": {
           "command": "python3",
           "args": ["/Users/parkminsu/Tupac/eval/phone_relay.py"],
-          "env": { "TOKEN": "<폰 앱 화면의 페어링 토큰>" }
+          "env": {
+            "TOKEN": "<토큰>",
+            "PHONE_MCP_URL": "http://127.0.0.1:8790/rpc"
+          }
         }
       }
     }
 
-미리 해둘 것:
-    adb forward tcp:9911 tcp:8765
-    폰에서 앱을 켜고 잠금을 풀어둔다 (잠긴 화면에서는 아무것도 못 한다)
+폰에서 앱을 켜고 잠금을 풀어둔다. 잠긴 화면에서는 접근성 서비스가 아무것도
+못 하므로, 어느 길로 붙든 마찬가지다.
 """
 import json
 import os
@@ -93,6 +101,11 @@ def main():
         except json.JSONDecodeError:
             request_id = None
 
+        # 알림(id 없는 요청)에는 답하지 않는다. adb로 갈 때는 폰이 202에 빈 본문을
+        # 주지만, 릴레이는 기다리는 자리를 풀려고 반드시 무언가를 돌려준다. 그것을
+        # 그대로 내보내면 묻지도 않은 답이 Claude 쪽으로 간다.
+        notification = request_id is None
+
         try:
             answer = forward(line.encode(), token)
         except urllib.error.HTTPError as error:
@@ -102,7 +115,7 @@ def main():
             # 경우(기기 offline, 앱 종료) ConnectionResetError가 난다. 둘 다 OSError다.
             answer = unreachable(request_id, str(error))
 
-        if answer is not None:
+        if answer is not None and not notification:
             sys.stdout.buffer.write(answer.rstrip(b"\n") + b"\n")
             sys.stdout.buffer.flush()
 
