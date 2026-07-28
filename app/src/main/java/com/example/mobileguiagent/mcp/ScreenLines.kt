@@ -36,6 +36,20 @@ object ScreenLines {
     /** 한 단추에 붙일 글자 수. 상품 카드처럼 글이 많은 것이 줄을 다 차지하지 않게. */
     private const val MAX_LABELS = 3
 
+    /** 한 줄에 실을 글자 길이. 이보다 길면 무엇인지는 이미 알 수 있다. */
+    private const val MAX_LABEL_CHARS = 80
+
+    /**
+     * 띄어쓰기 없이 이만큼 길면 사람에게 보여주는 글이 아니라 주소나 식별자로 본다.
+     *
+     * 실측(네이버 검색결과): 광고 단추의 contentDescription이
+     * "44KouPt1vroSwhzmZjPhA2xVhPNUKcHaEM9ADnJzghu5hCYK..." 로 400자였다. 이런 줄은
+     * 무엇을 누를지 정하는 데 아무 도움이 안 되면서 화면의 절반을 차지한다.
+     */
+    private const val OPAQUE_CHARS = 40
+
+    private val WHITESPACE = Regex("\\s+")
+
     /**
      * 글자를 그 글자를 감싼 단추에 얹어 한 줄로 만든다.
      *
@@ -64,8 +78,9 @@ object ScreenLines {
             val text = label(node)
             if (text.isEmpty()) continue
             val owner = ownerOf(node, byId)?.takeIf { it.id in visible } ?: continue
-            val labels = merged.getOrPut(owner.id) { mutableListOf() }
-            if (labels.size < MAX_LABELS && text !in labels) labels += text
+            merged.getOrPut(owner.id) { mutableListOf() } += text
+            // 붙일 자리가 없어도 지운다. 임자가 정해진 글자를 따로 한 줄 더
+            // 내보내면 합친 뜻이 없다.
             absorbed += node.id
         }
 
@@ -74,12 +89,34 @@ object ScreenLines {
             .joinToString("\n") { node ->
                 // 제 라벨이 먼저다. 단추 자신의 설명("쿠팡 홈")이 안쪽 글자보다
                 // 그 단추를 잘 가리킨다.
-                val labels = (listOf(label(node)) + merged[node.id].orEmpty())
-                    .filter { it.isNotEmpty() }
-                    .distinct()
-                    .take(MAX_LABELS)
-                line(node, labels.joinToString(" "))
+                line(node, joinLabels(listOf(label(node)) + merged[node.id].orEmpty()))
             }
+    }
+
+    /**
+     * 겹치는 글자를 걷어내고 한 줄 분량으로 줄인다.
+     *
+     * 왜 단순히 이어 붙이면 안 되는가(실측, 네이버):
+     *   "  NAVER NAVER", "네이버페이 네이버페이" 처럼 같은 말이 두 번 나온다.
+     *   단추의 contentDescription이 안쪽 글자를 이미 담고 있는데, 앞뒤 공백이
+     *   달라서 글자 비교로는 같은 줄로 보이지 않기 때문이다. 그래서 공백을
+     *   고른 뒤에 견주고, 이미 담긴 말이면 버린다.
+     */
+    private fun joinLabels(candidates: List<String>): String {
+        val kept = mutableListOf<String>()
+        for (raw in candidates) {
+            val text = WHITESPACE.replace(raw.trim(), " ")
+            if (text.isEmpty()) continue
+            if (text.length >= OPAQUE_CHARS && !text.contains(' ')) continue
+            // 이미 넣은 말에 들어 있으면 버린다("NAVER"는 "  NAVER"와 같은 말이다).
+            if (kept.any { it.contains(text) }) continue
+            kept.removeAll { text.contains(it) }
+            kept += text
+            if (kept.size >= MAX_LABELS) break
+        }
+        val joined = kept.joinToString(" ")
+        return if (joined.length <= MAX_LABEL_CHARS) joined
+        else joined.take(MAX_LABEL_CHARS).trimEnd() + "…"
     }
 
     /** 부를 수 있는 것. 스크롤 상자는 글자의 임자가 될 수 없다. */

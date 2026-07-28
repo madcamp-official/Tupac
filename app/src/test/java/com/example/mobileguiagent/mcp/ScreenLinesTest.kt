@@ -186,6 +186,52 @@ class ScreenLinesTest {
     }
 
     @Test
+    fun `같은 말이 두 번 실리지 않는다`() {
+        // 실측(네이버): 단추의 설명이 안쪽 글자를 이미 담고 있는데 앞뒤 공백이
+        // 달라 "  NAVER NAVER" 로 나갔다.
+        assertEquals(
+            "node_62 [누름] NAVER @50,50",
+            render(
+                listOf(
+                    node("node_62", clickable = true),
+                    node("node_63", parent = "node_62"),
+                ),
+                mapOf("node_62" to "  NAVER", "node_63" to "NAVER"),
+            ),
+        )
+    }
+
+    @Test
+    fun `주소나 식별자로 보이는 글은 싣지 않는다`() {
+        // 실측(네이버 검색결과): 광고 단추의 설명이 400자짜리 토큰이었다.
+        // 무엇을 누를지 정하는 데 쓸모가 없으면서 화면의 절반을 차지했다.
+        assertEquals(
+            "node_80 [누름] 광고 @50,50",
+            render(
+                listOf(
+                    node("node_80", clickable = true),
+                    node("node_81", parent = "node_80"),
+                ),
+                mapOf(
+                    "node_80" to "44KouPt1vroSwhzmZjPhA2xVhPNUKcHaEM9ADnJzghu5hCYKzKMPXkW6",
+                    "node_81" to "광고",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `너무 긴 글은 잘라서 싣는다`() {
+        val long = "전지역 어디라도 30초만에 우리 동네 전문 업체 5개 무료 견적 받고 " +
+            "비교해보세요 이제 검색은 그만! 오늘의집에서 30초만에 검증된 업체 찾기 끝!"
+        assertEquals(
+            "잘렸다는 것을 알 수 있어야 다음에 무엇을 할지 정할 수 있다",
+            "node_96 [누름] ${long.take(80).trimEnd()}… @50,50",
+            render(node("node_96", clickable = true), long),
+        )
+    }
+
+    @Test
     fun `중첩된 단추는 각자 남는다`() {
         // 목록 한 줄 전체가 눌리면서 그 안의 스위치도 따로 눌리는 화면이 있다.
         assertEquals(
