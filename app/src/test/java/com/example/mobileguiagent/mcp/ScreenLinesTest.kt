@@ -24,6 +24,7 @@ class ScreenLinesTest {
         checked: Boolean? = null,
         password: Boolean = false,
         range: UiRange? = null,
+        parent: String? = null,
     ) = UiNode(
         id = id, text = null, contentDescription = null, hint = null,
         className = null, viewId = null,
@@ -32,12 +33,15 @@ class ScreenLinesTest {
         // 생성자 대신 값을 직접 넣는다. 단위 테스트의 Rect는 껍데기라 생성자가
         // 아무것도 하지 않는다.
         bounds = Rect().also { it.left = left; it.top = top; it.right = right; it.bottom = bottom },
-        depth = 1,
+        depth = 1, parentId = parent,
         password = password, range = range,
     )
 
     private fun render(node: UiNode, label: String) =
-        ScreenLines.render(listOf(node)) { label }
+        ScreenLines.render(listOf(node), listOf(node)) { label }
+
+    private fun render(nodes: List<UiNode>, labels: Map<String, String>) =
+        ScreenLines.render(nodes, nodes) { node -> labels[node.id].orEmpty() }
 
     @Test
     fun `누를 수 있는 것은 표시와 중심점이 붙는다`() {
@@ -92,15 +96,109 @@ class ScreenLinesTest {
     fun `여러 줄은 줄바꿈으로 잇는다`() {
         assertEquals(
             "node_1 [입력] 검색 @50,50\nnode_2 [스크롤] @50,50\nnode_3 [누름,잠김] 저장 @50,50",
-            ScreenLines.render(
+            render(
                 listOf(
                     node("node_1", editable = true),
                     node("node_2", scrollable = true),
                     node("node_3", clickable = true, enabled = false),
                 ),
-            ) { node ->
-                mapOf("node_1" to "검색", "node_2" to "", "node_3" to "저장").getValue(node.id)
-            },
+                mapOf("node_1" to "검색", "node_3" to "저장"),
+            ),
+        )
+    }
+
+    @Test
+    fun `글자는 그 글자를 감싼 단추에 얹힌다`() {
+        // 실측(쿠팡 홈): "로그인"이라 적힌 줄은 누를 수 없고, 진짜 단추에는
+        // 글자가 없다. 둘을 좌표로 짝짓는 것이 부르는 쪽의 주된 일이었다.
+        assertEquals(
+            "단추와 간판이 따로 오면 어느 것이 짝인지 매번 좌표로 재야 한다",
+            "node_16 [누름] 로그인 @910,189",
+            render(
+                listOf(
+                    node("node_16", 789, 141, 1032, 237, clickable = true),
+                    node("node_18", 861, 141, 1008, 237, parent = "node_16"),
+                ),
+                mapOf("node_18" to "로그인"),
+            ),
+        )
+    }
+
+    @Test
+    fun `스크롤 상자를 넘어서까지 얹지는 않는다`() {
+        // 리스트는 화면 전체를 감싼다. 여기를 넘어가면 모든 글자가 리스트 하나에
+        // 달라붙어 화면이 도리어 뭉개진다.
+        assertEquals(
+            "node_25 [스크롤] @50,50\nnode_30 이 상품 놓치지 마세요! @50,50",
+            render(
+                listOf(
+                    node("node_25", scrollable = true),
+                    node("node_30", parent = "node_25"),
+                ),
+                mapOf("node_30" to "이 상품 놓치지 마세요!"),
+            ),
+        )
+    }
+
+    @Test
+    fun `임자가 없는 글자는 제 줄로 남는다`() {
+        assertEquals(
+            "화면 제목처럼 아무 단추에도 속하지 않는 글자가 사라지면 안 된다",
+            "node_9 카카오톡을 시작합니다 @50,50",
+            render(listOf(node("node_9")), mapOf("node_9" to "카카오톡을 시작합니다")),
+        )
+    }
+
+    @Test
+    fun `단추가 제 설명을 가지면 그것이 앞에 온다`() {
+        assertEquals(
+            "단추 자신의 설명이 안쪽 글자보다 그 단추를 잘 가리킨다",
+            "node_14 [누름] 쿠팡 홈 3 @50,50",
+            render(
+                listOf(
+                    node("node_14", clickable = true),
+                    node("node_15", parent = "node_14"),
+                ),
+                mapOf("node_14" to "쿠팡 홈", "node_15" to "3"),
+            ),
+        )
+    }
+
+    @Test
+    fun `글자가 많은 단추는 잘라서 얹는다`() {
+        assertEquals(
+            "상품 카드는 글이 예닐곱 줄이라 그대로 얹으면 줄을 다 차지한다",
+            "node_113 [누름] 세탁세제 12900원 로켓배송 @50,50",
+            render(
+                listOf(
+                    node("node_113", clickable = true),
+                    node("node_114", parent = "node_113"),
+                    node("node_115", parent = "node_113"),
+                    node("node_116", parent = "node_113"),
+                    node("node_117", parent = "node_113"),
+                ),
+                mapOf(
+                    "node_114" to "세탁세제", "node_115" to "12900원",
+                    "node_116" to "로켓배송", "node_117" to "내일 도착",
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `중첩된 단추는 각자 남는다`() {
+        // 목록 한 줄 전체가 눌리면서 그 안의 스위치도 따로 눌리는 화면이 있다.
+        assertEquals(
+            "안쪽 단추가 사라지면 스위치만 누르는 길이 없어진다",
+            "node_40 [누름] 저장 @50,50\nnode_42 [누름,켜짐] @50,50",
+            render(
+                listOf(
+                    node("node_40", clickable = true),
+                    node("node_41", parent = "node_40"),
+                    node("node_42", clickable = true, checked = true, parent = "node_40"),
+                ),
+                mapOf("node_41" to "저장"),
+            ),
         )
     }
 }

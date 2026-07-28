@@ -33,8 +33,67 @@ object ScreenLines {
             "centre in pixels — use it to tell which items belong together, not to tap. " +
             "Tap by node id with device_click_node."
 
-    fun render(nodes: List<UiNode>, label: (UiNode) -> String): String =
-        nodes.joinToString("\n") { node -> line(node, label(node)) }
+    /** 한 단추에 붙일 글자 수. 상품 카드처럼 글이 많은 것이 줄을 다 차지하지 않게. */
+    private const val MAX_LABELS = 3
+
+    /**
+     * 글자를 그 글자를 감싼 단추에 얹어 한 줄로 만든다.
+     *
+     * 왜 필요한가(실측):
+     *   쿠팡 홈 47줄 중 그대로 쓸 수 있는 줄은 2줄이었다. 28줄은 무엇인지 모를
+     *   단추였고 17줄은 누를 수 없는 글자였다. 설정은 24줄 중 1줄이었다. 즉
+     *   "이 글자의 임자가 어느 단추인가"를 맞추는 것이 예외가 아니라 대부분의
+     *   일이었고, 그걸 부르는 쪽이 좌표 거리로 짐작하고 있었다.
+     *
+     *   폰은 짐작할 이유가 없다. 트리에 부모가 그대로 있다. 같은 걸 누를 때는
+     *   이미 하고 있었다(AgentAccessibilityService.findClickableNode) — 읽을 때만
+     *   안 하고 있었다.
+     *
+     * 스크롤 상자를 만나면 멈춘다. 리스트는 화면 전체를 감싸므로, 넘어가면 모든
+     * 글자가 리스트 하나에 달라붙어 도리어 화면이 뭉개진다.
+     */
+    fun render(shown: List<UiNode>, all: List<UiNode>, label: (UiNode) -> String): String {
+        val byId = all.associateBy { it.id }
+        val visible = shown.mapTo(mutableSetOf()) { it.id }
+
+        // 어느 글자가 어느 단추의 것인지 먼저 정한다.
+        val merged = mutableMapOf<String, MutableList<String>>()
+        val absorbed = mutableSetOf<String>()
+        for (node in shown) {
+            if (isTarget(node)) continue
+            val text = label(node)
+            if (text.isEmpty()) continue
+            val owner = ownerOf(node, byId)?.takeIf { it.id in visible } ?: continue
+            val labels = merged.getOrPut(owner.id) { mutableListOf() }
+            if (labels.size < MAX_LABELS && text !in labels) labels += text
+            absorbed += node.id
+        }
+
+        return shown
+            .filterNot { it.id in absorbed }
+            .joinToString("\n") { node ->
+                // 제 라벨이 먼저다. 단추 자신의 설명("쿠팡 홈")이 안쪽 글자보다
+                // 그 단추를 잘 가리킨다.
+                val labels = (listOf(label(node)) + merged[node.id].orEmpty())
+                    .filter { it.isNotEmpty() }
+                    .distinct()
+                    .take(MAX_LABELS)
+                line(node, labels.joinToString(" "))
+            }
+    }
+
+    /** 부를 수 있는 것. 스크롤 상자는 글자의 임자가 될 수 없다. */
+    private fun isTarget(node: UiNode): Boolean = node.clickable || node.editable
+
+    private fun ownerOf(node: UiNode, byId: Map<String, UiNode>): UiNode? {
+        var current = node.parentId?.let(byId::get)
+        while (current != null) {
+            if (isTarget(current)) return current
+            if (current.scrollable) return null
+            current = current.parentId?.let(byId::get)
+        }
+        return null
+    }
 
     private fun line(node: UiNode, label: String): String {
         val marks = marksOf(node)

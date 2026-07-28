@@ -21,6 +21,9 @@ data class UiNode(
     val checked: Boolean?,
     val bounds: Rect,
     val depth: Int,
+    // 트리에서 바로 위 노드. 글자를 그 글자를 감싼 단추에 붙이는 데 쓴다.
+    // 거리로 짐작하지 않고 부모를 따라가면 되므로 틀릴 일이 없다.
+    val parentId: String? = null,
     // 현재 화면에 실제로 보이는지(안드로이드 isVisibleToUser). 가려지거나 화면 밖이면 false.
     val visibleToUser: Boolean = true,
     // 비밀번호 입력창인지. 이 화면을 클라우드 모델에 보내면 안 된다고 판단하는

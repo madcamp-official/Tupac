@@ -214,13 +214,15 @@ class AgentAccessibilityService : AccessibilityService() {
         node: AccessibilityNodeInfo?,
         depth: Int = 0,
         output: MutableList<UiNode> = mutableListOf(),
+        parentId: String? = null,
     ): List<UiNode> {
         if (node == null || output.size >= MAX_NODES || depth > MAX_DEPTH) return output
 
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
+        val id = "node_${output.size}"
         output += UiNode(
-            id = "node_${output.size}",
+            id = id,
             text = node.text?.toString(),
             contentDescription = node.contentDescription?.toString(),
             hint = node.hintText?.toString(),
@@ -233,6 +235,7 @@ class AgentAccessibilityService : AccessibilityService() {
             checked = if (node.isCheckable) node.isChecked else null,
             bounds = bounds,
             depth = depth,
+            parentId = parentId,
             visibleToUser = node.isVisibleToUser,
             password = node.isPassword,
             range = node.rangeInfo?.let { info ->
@@ -241,7 +244,7 @@ class AgentAccessibilityService : AccessibilityService() {
         )
 
         for (index in 0 until node.childCount) {
-            collectNodes(node.getChild(index), depth + 1, output)
+            collectNodes(node.getChild(index), depth + 1, output, id)
         }
         return output
     }

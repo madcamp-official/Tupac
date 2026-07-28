@@ -319,7 +319,9 @@ class PocketMcpHttpServer(
                 .put(
                     "description",
                     "Clicks one node from the most recent device_observe snapshot. " +
-                        "Rejects stale snapshot IDs and verifies whether the screen changed.",
+                        "Rejects stale snapshot IDs and verifies whether the screen changed. " +
+                        "Returns the screen it left you on, in the same line format as " +
+                        "device_observe - act on it directly instead of observing again.",
                 )
                 .put(
                     "inputSchema",
@@ -881,10 +883,19 @@ class PocketMcpHttpServer(
                 .put(
                     "after_snapshot_id",
                     after?.fingerprint?.hash ?: current.fingerprint.hash,
-                ),
+                )
+                // 바뀐 화면을 함께 준다. 안 주면 부르는 쪽이 device_observe를 한 번
+                // 더 불러야 하고, 그 한 번이 모델 왕복을 통째로 쓴다 — 한 걸음에
+                // 왕복이 둘이 된다. 화면은 방금 after_snapshot_id를 만들려고 이미
+                // 찍어둔 것이라 값이 더 들지 않는다.
+                .put("screen", after?.let { screenOf(it) } ?: JSONObject.NULL),
             isError = !success,
         )
     }
+
+    /** 응답에 실을 화면. 걸러내기와 개인정보 처리는 snapshotJson과 같은 길을 쓴다. */
+    private fun screenOf(snapshot: UiSnapshot): Any =
+        snapshotJson(snapshot, DEFAULT_RETURNED_NODES).opt("screen") ?: JSONObject.NULL
 
     private fun tapOnMainThread(x: Float, y: Float): Boolean {
         val service = AgentAccessibilityService.activeService ?: return false
@@ -1005,7 +1016,8 @@ class PocketMcpHttpServer(
         val shown = meaningful.take(maxNodes)
         // 라벨은 세 곳에 흩어져 있다. 빈 칸일 때는 hint만이 그 칸이 무엇인지
         // 알려주고, 값이 들어가면 text가 그 값이 된다. 셋 중 있는 것을 쓴다.
-        val screen = ScreenLines.render(shown) { node ->
+        // 부모를 따라가야 하므로 걸러내기 전의 전체 노드가 필요하다.
+        val screen = ScreenLines.render(shown, snapshot.nodes) { node ->
             listOfNotNull(node.text, node.contentDescription, node.hint)
                 .map(::clean)
                 .firstOrNull { it.isNotBlank() }
