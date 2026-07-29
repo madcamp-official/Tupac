@@ -42,21 +42,57 @@ object ScreenPrivacy {
         "생년월일" to Regex("""\b(19|20)\d{2}[.\-/](0?[1-9]|1[0-2])[.\-/](0?[1-9]|[12]\d|3[01])\b"""),
     )
 
-    /** 앱 자체가 민감한 경우. 화면 라벨이 무해해 보여도 통째로 막는다. */
+    /**
+     * 앱 자체가 민감한 경우. 화면 라벨이 무해해 보여도 통째로 막는다.
+     *
+     * 여기는 일부러 낱말 조각으로 맞춘다. CONTENT_PACKAGES와 반대로, 틀렸을 때
+     * 손해가 한쪽으로 크게 기울기 때문이다. 못 걸러서 새는 것(잔액·거래내역이
+     * 밖으로 나감)은 되돌릴 수 없고, 과하게 거르는 것은 "이 앱은 사람이 직접"
+     * 이라는 말을 한 번 더 듣는 것뿐이다. 그래서 조각이 넓게 걸리는 쪽을 택한다.
+     *
+     * 실측(폰의 456개 패키지)으로 빠져 있던 것을 채웠다. 삼성 블록체인 월렛
+     * (com.samsung.android.coldwalletservice)이 "wallet"도 "crypto"도 없는
+     * 이름이라 그대로 통과하고 있었다.
+     */
     private val SENSITIVE_PACKAGES = listOf(
+        // 은행
         "bank", "shinhan", "kookmin", "kbstar", "wooribank", "hanabank", "nonghyup",
-        "ibk", "kakaobank", "kbank", "tossbank", "toss", "payco", "kakaopay",
-        "samsungpay", "cert", "pass", "npki", "yessign", "keychain",
+        "ibk", "kakaobank", "kbank", "tossbank", "citi",
+        // 결제·송금
+        "toss", "payco", "kakaopay", "samsungpay", "naverpay", "spay", "paypal",
+        // 증권·가상자산
+        "securities", "stock", "invest", "upbit", "bithumb", "coinone", "korbit",
+        "wallet", "blockchain", "crypto",
+        // 인증서·비밀번호
+        "cert", "pass", "npki", "yessign", "keychain", "pki",
     )
 
     /**
      * 화면에 남의 이야기가 그대로 떠 있는 앱들. 대화 내용·메일 본문·사진 설명은
      * 길을 찾는 데 필요 없다. 어느 항목을 누를지만 알면 된다.
+     *
+     * 낱말 조각이 아니라 패키지 이름 마디로 맞춘다. 조각으로 맞추면 엉뚱한 앱이
+     * 걸린다 — 실측(폰에 깔린 456개로 확인): "gm"이 com.google.android.gms,
+     * diagmonagent, vebgm 등 7개를 잡았고 "line"이 com.google.mainline.telemetry를
+     * 잡았다. 이건 단순히 지저분한 게 아니라 위험하다. 잘못 걸린 앱에서는 긴 글이
+     * 통째로 "<내용 N자>"가 되어, 정작 읽어야 할 시스템 대화상자를 못 읽는다.
      */
     private val CONTENT_PACKAGES = listOf(
-        "kakao.talk", "line", "telegram", "whatsapp", "messenger", "facebook",
-        "instagram", "discord", "slack", "mms", "messaging", "android.email",
-        "gm", "mail", "gallery", "photos", "band", "everytime",
+        "com.kakao.talk",
+        "jp.naver.line.android",
+        "org.telegram.messenger",
+        "com.whatsapp",
+        "com.facebook.orca", "com.facebook.katana", "com.facebook.mlite",
+        "com.instagram.android",
+        "com.discord",
+        "com.Slack",
+        "com.android.mms", "com.samsung.android.messaging",
+        "com.google.android.apps.messaging",
+        "com.google.android.gm",
+        "com.android.email", "com.samsung.android.email.provider",
+        "com.sec.android.gallery3d", "com.google.android.apps.photos",
+        "com.nhn.android.band",
+        "com.everytime.v2",
     )
 
     /**
@@ -86,6 +122,24 @@ object ScreenPrivacy {
      * 실측: 로그인 실패 안내가 "안내문 + 확인 버튼" 두 개짜리 화면으로 떴다.
      */
     private const val DIALOG_NODES = 6
+
+    /**
+     * 그 패키지가 목록의 앱인지. 마디 단위로 본다.
+     *
+     * com.google.android.gm(지메일)과 com.google.android.gms(구글 기본 서비스)는
+     * 앞이 똑같아서 startsWith로는 갈리지 않는다. 뒤에 점이 오는 것까지 봐야
+     * 서로 다른 앱으로 갈린다.
+     */
+    private fun matchesPackage(packageName: String, markers: List<String>): Boolean {
+        val lowered = packageName.lowercase()
+        return markers.any { marker ->
+            val target = marker.lowercase()
+            lowered == target || lowered.startsWith("$target.")
+        }
+    }
+
+    fun isContentApp(packageName: String): Boolean =
+        matchesPackage(packageName, CONTENT_PACKAGES)
 
     fun labelOf(node: UiNode): String =
         listOfNotNull(node.text, node.contentDescription, node.hint)
@@ -140,8 +194,7 @@ object ScreenPrivacy {
         val masked = mask(label)
         if (masked.length <= CONTENT_LENGTH) return masked
 
-        val lowered = packageName.lowercase()
-        if (CONTENT_PACKAGES.none { marker -> marker in lowered }) return masked
+        if (!isContentApp(packageName)) return masked
         if (nodeCount < DIALOG_NODES || isUiText(masked)) return masked
         return "<내용 ${masked.length}자>"
     }

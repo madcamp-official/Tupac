@@ -4,11 +4,21 @@ import android.os.Handler
 import android.os.Looper
 import com.example.mobileguiagent.accessibility.AgentAccessibilityService
 import com.example.mobileguiagent.accessibility.ScreenCaptureResult
+import com.example.mobileguiagent.agent.ScreenPrivacy
 import org.json.JSONObject
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
+/**
+ * 화면을 그림으로 찍는다.
+ *
+ * 이 도구에도 민감한 앱 차단이 걸려야 한다. device_observe는 은행·결제·인증
+ * 앱에서 응답 자체를 거절하는데(ScreenPrivacy.blockedApp), 여기에 같은 문이
+ * 없으면 그 앱을 열고 사진을 찍는 것으로 그 문을 그냥 지나갈 수 있다. 글자를
+ * 가려서 내보내는 방식은 픽셀에는 아예 통하지 않으므로, 그림은 통째로 막는
+ * 것 말고는 방법이 없다.
+ */
 object CaptureScreenDeviceTool : DeviceTool {
     const val NAME = "capture_screen"
     const val DEFAULT_MAX_DIMENSION = 1200
@@ -45,6 +55,16 @@ object CaptureScreenDeviceTool : DeviceTool {
                 code = "ACCESSIBILITY_NOT_CONNECTED",
                 message = "접근성 서비스가 연결되지 않았습니다.",
             )
+
+        // 찍기 전에 어느 앱인지 본다. 찍고 나서 거르는 것으로는 늦다.
+        service.rootInActiveWindow?.packageName?.toString()?.let { packageName ->
+            ScreenPrivacy.blockedApp(packageName)?.let { reason ->
+                return DeviceToolResult.Error(
+                    code = "SENSITIVE_APP",
+                    message = "$reason 이 앱은 사람이 직접 다뤄야 합니다.",
+                )
+            }
+        }
 
         val result = AtomicReference<ScreenCaptureResult?>()
         val latch = CountDownLatch(1)

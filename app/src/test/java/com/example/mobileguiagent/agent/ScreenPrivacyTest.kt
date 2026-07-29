@@ -122,4 +122,39 @@ class ScreenPrivacyTest {
         )
         assertNull("평범한 설정 화면", ScreenPrivacy.blockedApp("com.android.settings"))
     }
+
+    @Test
+    fun `가상자산 지갑도 막는다`() {
+        // 실측: 폰의 456개 패키지를 훑어보니 삼성 블록체인 월렛이
+        // com.samsung.android.coldwalletservice라, 이름에 "bank"도 "pay"도 없어
+        // 그대로 통과하고 있었다.
+        assertNotNull(
+            "지갑 화면에 뜬 것은 잔액이다",
+            ScreenPrivacy.blockedApp("com.samsung.android.coldwalletservice"),
+        )
+        assertNotNull("거래소도 같다", ScreenPrivacy.blockedApp("com.dunamu.exchange.upbit"))
+    }
+
+    @Test
+    fun `대화앱은 마디로 가른다`() {
+        // 조각으로 맞추면 엉뚱한 앱이 걸린다. 실측으로 "gm"이 잡던 것들이다.
+        // 잘못 걸리면 긴 글이 통째로 가려져, 정작 읽어야 할 시스템 대화상자를 못 읽는다.
+        val notice = "이 기기에서 계정을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요."
+        assertEquals(
+            "com.google.android.gms는 지메일이 아니다",
+            notice,
+            ScreenPrivacy.redact(notice, "com.google.android.gms", MANY),
+        )
+        assertEquals(
+            "com.google.mainline.telemetry는 라인이 아니다",
+            notice,
+            ScreenPrivacy.redact(notice, "com.google.mainline.telemetry", MANY),
+        )
+        assertEquals(
+            "진짜 지메일은 그대로 걸려야 한다",
+            true,
+            ScreenPrivacy.redact("어제 보낸 메일 확인해봤어? 답장이 없어서", "com.google.android.gm", MANY)
+                .startsWith("<내용"),
+        )
+    }
 }
