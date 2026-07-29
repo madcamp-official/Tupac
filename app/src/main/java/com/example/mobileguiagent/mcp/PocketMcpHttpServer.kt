@@ -393,29 +393,21 @@ class PocketMcpHttpServer(
                 ),
         )
     }.also { result ->
-        result.getJSONArray("tools").put(
-            JSONObject()
-                .put("name", "device_get_field")
-                .put(
-                    "description",
-                    "Legacy. Returns a stored personal-data value to you in the clear. " +
-                        "Use device_fill_secrets instead — it fills the same value into " +
-                        "the form without the value ever leaving the phone. Only reach " +
-                        "for this if device_fill_secrets cannot do the job, and say why.",
-                )
-                .put(
-                    "inputSchema",
-                    objectSchema(
-                        JSONObject().put(
-                            "field",
-                            JSONObject()
-                                .put("type", "string")
-                                .put("enum", JSONArray(SecretVault.FIELDS.keys.toList()))
-                                .put("description", fieldHints()),
-                        ),
-                    ).put("required", JSONArray().put("field")),
-                ),
-        )
+        // device_get_field는 여기 없다. 부를 수는 있지만 내주지는 않는다.
+        //
+        // 이 도구는 금고 값을 평문으로 돌려준다 — 지침이 "이름·전화번호·주소·
+        // 아이디·비밀번호를 직접 다루지 말라"고 막는 바로 그것이다. 규칙이 막는
+        // 것을 도구가 열어주면 규칙은 지켜지기를 바라는 말이 될 뿐이다.
+        //
+        // 그렇다고 dispatch에서 지울 수는 없다. eval/agent.py가 이걸 쓴다. 그쪽은
+        // 맥북의 파이썬이 칸 순서를 정하고, 로그에서 값을 지우고(scrub), 직접
+        // 타이핑까지 하는 구조라 값이 실제로 있어야 돈다. 브레인끼리(로컬 EXAONE
+        // 대 Gemini) 정확도를 견주는 실험 장치라 지금도 살아 있는 코드다.
+        //
+        // 그래서 목록에서만 뺀다. 이름을 아는 쪽(eval)은 그대로 부를 수 있고,
+        // 목록을 보고 도구를 고르는 쪽(MCP 클라이언트)에게는 아예 보이지 않아
+        // 손이 가지 않는다. 이름을 아는 호출자를 막지는 못하지만, 막으려는 것은
+        // 몰래 부르는 사람이 아니라 "규칙으로는 하지 말라면서 손에 쥐여주는" 상황이다.
         result.getJSONArray("tools").put(
             JSONObject()
                 .put("name", "device_type_node")
