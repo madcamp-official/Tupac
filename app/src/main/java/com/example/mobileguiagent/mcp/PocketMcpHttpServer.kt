@@ -255,10 +255,22 @@ class PocketMcpHttpServer(
                   - accepting terms, granting permissions, creating accounts, paying
                   - anything on a banking, payment or certificate app
 
-                If a permission or consent dialog is covering the screen and you cannot
-                continue without answering it, decline rather than accept, and say what
-                you declined. Declining is the reversible half: the person can grant it
-                afterwards, but nothing takes back data already handed over.
+                One of those steps standing later in a form does not put the whole form
+                out of reach. Do every part you are allowed to, stop at the step that is
+                theirs, and tell them exactly what is left. A sign-up form that ends in
+                an SMS code still gets its name, birthday and phone filled first — the
+                person comes back to a form with one field left, not an empty one.
+
+                Dialogs cover the screen constantly. Read what kind one is before
+                dismissing it. A notice that only tells you something — parking, bring
+                your ID — can be confirmed and stepped past. A request for consent or
+                permission cannot: decline rather than accept, and say what you declined.
+                Declining is the reversible half, because the person can grant it
+                afterwards but nothing takes back data already handed over.
+
+                After dismissing anything, check that after_package is still the app you
+                were in. A button labelled 닫기 is sometimes a deep link that throws you
+                into another app rather than closing anything.
 
                 Changing settings is fine — those stay on the phone and can be undone.
                 The exceptions are the settings that end the session itself. You reach
