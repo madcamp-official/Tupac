@@ -941,8 +941,10 @@ class PocketMcpHttpServer(
     private fun waitForScreenChange(before: UiSnapshot): UiSnapshot? {
         val deadline = System.currentTimeMillis() + ACTION_VERIFY_TIMEOUT_MS
         var latest: UiSnapshot? = null
+        // 먼저 자고 나서 보는 순서였다. 그러면 화면이 클릭 직후 이미 바뀌어
+        // 있어도 최소 ACTION_VERIFY_POLL_MS(150ms)를 무조건 손해 본다. 안 눌린
+        // 클릭도 아니고, 걸음마다 붙는 값이라 무시할 크기가 아니다.
         while (System.currentTimeMillis() < deadline) {
-            Thread.sleep(ACTION_VERIFY_POLL_MS)
             latest = captureSnapshotOnMainThread()
             if (
                 latest != null &&
@@ -953,6 +955,7 @@ class PocketMcpHttpServer(
             ) {
                 return latest
             }
+            Thread.sleep(ACTION_VERIFY_POLL_MS)
         }
         return latest
     }
