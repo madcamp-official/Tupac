@@ -1,7 +1,6 @@
 package com.example.mobileguiagent.device
 
 import com.example.mobileguiagent.accessibility.AgentAccessibilityService
-import com.example.mobileguiagent.agent.FieldAssign
 import com.example.mobileguiagent.agent.SecretFiller
 import org.json.JSONArray
 import org.json.JSONObject
@@ -93,6 +92,4 @@ object FillSecretsDeviceTool : DeviceTool {
         }
     }
 
-    /** 진행 상황 표시에 쓸 짧은 설명. 값은 절대 싣지 않는다. */
-    fun describe(node: FieldAssign.Step): String = node.line
 }

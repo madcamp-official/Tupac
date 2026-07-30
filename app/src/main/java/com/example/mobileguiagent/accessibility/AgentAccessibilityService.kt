@@ -23,7 +23,6 @@ import com.example.mobileguiagent.agent.SamePlace
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiRange
 import com.example.mobileguiagent.model.UiSnapshot
-import com.example.mobileguiagent.model.UiSnapshotStore
 import com.example.mobileguiagent.repository.AgentRepository
 
 class AgentAccessibilityService : AccessibilityService() {
@@ -36,16 +35,6 @@ class AgentAccessibilityService : AccessibilityService() {
     }.getOrElse {
         Log.e(TAG, "Unable to open Android settings", it)
         false
-    }
-
-    private val snapshotHandler = Handler(Looper.getMainLooper())
-    private val persistSnapshot = Runnable {
-        captureSnapshot()
-            ?.takeIf { snapshot -> snapshot.packageName == SETTINGS_PACKAGE }
-            ?.let { snapshot ->
-                runCatching { UiSnapshotStore.write(this, snapshot) }
-                    .onFailure { Log.e(TAG, "Unable to persist UI snapshot", it) }
-            }
     }
 
     override fun onServiceConnected() {
@@ -79,16 +68,6 @@ class AgentAccessibilityService : AccessibilityService() {
             className = className,
             eventType = event.eventType,
         )
-        if (
-            packageName == SETTINGS_PACKAGE &&
-            (
-                event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
-                    event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-                )
-        ) {
-            snapshotHandler.removeCallbacks(persistSnapshot)
-            snapshotHandler.postDelayed(persistSnapshot, SNAPSHOT_SETTLE_DELAY_MS)
-        }
     }
 
     override fun onInterrupt() {
@@ -96,7 +75,6 @@ class AgentAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        snapshotHandler.removeCallbacks(persistSnapshot)
         val wasActiveService = activeService === this
         if (wasActiveService) {
             activeService = null
@@ -724,7 +702,6 @@ class AgentAccessibilityService : AccessibilityService() {
 
         /** AndroidX가 roleDescription을 담아 보내는 extras 키. 플랫폼 상수가 아니다. */
         private const val ROLE_DESCRIPTION_KEY = "AccessibilityNodeInfo.roleDescription"
-        private const val SETTINGS_PACKAGE = "com.android.settings"
 
         /** 주소창을 가진 앱으로 볼 패키지 조각. */
         private val BROWSER_MARKERS = listOf(
@@ -736,7 +713,6 @@ class AgentAccessibilityService : AccessibilityService() {
             ":id/url_bar", ":id/urlbar", ":id/url_view", ":id/toolbar_url",
             ":id/location_bar_edit_text", ":id/mozac_browser_toolbar_url_view",
         )
-        private const val SNAPSHOT_SETTLE_DELAY_MS = 180L
 
         @Volatile
         var activeService: AgentAccessibilityService? = null
