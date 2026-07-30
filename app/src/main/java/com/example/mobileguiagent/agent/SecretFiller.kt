@@ -91,14 +91,7 @@ object SecretFiller {
         // 이전 채우기의 기억을 버린다. 평문 값을 필요한 창 밖까지 들고 있지 않는다.
         FilledSecrets.clear()
 
-        // 기기 안 모델은 있으면 쓰고 없으면 만다. 모델 파일이 없다고 로그인이
-        // 막히면 안 된다 — 그때는 지금까지처럼 코드가 바로 넣는다.
-        val local = LocalStep.open(service)
-        return try {
-            runPlan(service, values, submit, missing, local)
-        } finally {
-            local?.close()
-        }
+        return runPlan(service, values, submit, missing)
     }
 
     private fun runPlan(
@@ -106,7 +99,6 @@ object SecretFiller {
         values: Map<String, String>,
         submit: Boolean,
         missing: List<String>,
-        local: LocalStep?,
     ): Outcome {
         val order = mutableListOf<String>()
         val filled = mutableSetOf<String>()
@@ -149,32 +141,6 @@ object SecretFiller {
 
             val node = screen.nodes.firstOrNull { it.id == step.nodeId }
                 ?: return Outcome.Failed("NODE_GONE", "짚어둔 칸이 화면에서 사라졌습니다.")
-
-            // 화면을 건드리기 전에 모델에게 이 한 줄을 확인받는다. 모델 답은
-            // 실행할 값이 아니라 계획과 맞춰볼 대조본이다 — 아래에서 실제로 넣는
-            // 값은 언제나 금고에서 꺼낸 values다.
-            if (local != null) {
-                val started = System.currentTimeMillis()
-                val verdict = local.confirm(
-                    plan.steps, step, screen.nodes, screen.packageName, values.values,
-                )
-                Log.i(TAG, "확인 ${System.currentTimeMillis() - started} ms — ${step.why}")
-                when (verdict) {
-                    is LocalStep.Verdict.Confirmed -> Unit
-                    // 모델 답에는 값이 들어 있을 수 있다. 무엇이 달랐는지는 적지 않고,
-                    // 어느 단계에서 어긋났는지만 남긴다.
-                    is LocalStep.Verdict.Mismatch -> return Outcome.Failed(
-                        "STEP_NOT_CONFIRMED",
-                        "기기 안 모델이 ${verdict.attempts}번 모두 계획과 다른 줄을 냈습니다" +
-                            "(${step.why}). ${summary(order, filled, submitted, unplaced)} " +
-                            "잘못된 값이 들어가지 않도록 여기서 멈췄습니다.",
-                    )
-                    // 모델이 죽었다고 로그인까지 막을 이유는 없다. 넣을 값은
-                    // 어차피 금고에서 꺼낸 것이지 모델이 지어낸 것이 아니다.
-                    is LocalStep.Verdict.Unavailable ->
-                        Log.w(TAG, "확인을 건너뜁니다: ${verdict.reason}")
-                }
-            }
 
             when (step.action) {
                 "fill" -> {
