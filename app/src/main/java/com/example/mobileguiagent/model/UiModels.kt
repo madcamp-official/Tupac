@@ -30,6 +30,10 @@ data class UiNode(
     // 가장 강한 신호다. 값 자체는 접근성 트리에도 안 나오지만, 이런 칸이 있는
     // 화면이면 주변에 아이디·주민번호 같은 것이 함께 있다고 봐야 한다.
     val password: Boolean = false,
+    // 앱이 직접 붙인 역할 이름("드롭다운", "menu popup"). 웹뷰의 선택 컨트롤은
+    // className이 그냥 View라 클래스로는 가릴 수 없고, 이것만이 그게 고르는
+    // 칸이라는 표시다. 없는 노드가 대부분이라 기본은 null이다.
+    val roleDescription: String? = null,
     // 슬라이더·진행바라면 그 값의 범위. 밝기와 음량이 대표적이다.
     val range: UiRange? = null,
 )

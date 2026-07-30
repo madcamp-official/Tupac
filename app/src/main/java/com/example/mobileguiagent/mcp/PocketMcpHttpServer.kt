@@ -497,6 +497,113 @@ class PocketMcpHttpServer(
                 ),
         )
     }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_set_checked")
+                .put(
+                    "description",
+                    "Sets a checkbox, switch, or toggle to the state you want, and verifies " +
+                        "it got there. Prefer this over tapping: a tap only flips whatever " +
+                        "state the control happens to be in. Doing nothing when it already " +
+                        "matches is a success, reported as changed=false. Only nodes that " +
+                        "device_observe showed as 켜짐/꺼짐 can be set.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put(
+                                "snapshot_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Exact snapshot_id from device_observe."),
+                            )
+                            .put(
+                                "node_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Toggle node id from the same snapshot."),
+                            )
+                            .put(
+                                "checked",
+                                JSONObject().put("type", "boolean")
+                                    .put("description", "The state you want it to end up in."),
+                            ),
+                    ).put(
+                        "required",
+                        JSONArray().put("snapshot_id").put("node_id").put("checked"),
+                    ),
+                ),
+        )
+    }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_select_option")
+                .put(
+                    "description",
+                    "Opens a dropdown or spinner and picks the option with exactly that " +
+                        "name. Both taps happen here, so you do not observe the open list " +
+                        "yourself. The name must match exactly — if you are unsure of the " +
+                        "wording, tap the control with device_click_node and read the list.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put(
+                                "snapshot_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Exact snapshot_id from device_observe."),
+                            )
+                            .put(
+                                "node_id",
+                                JSONObject().put("type", "string")
+                                    .put("description", "The dropdown node id, not the option."),
+                            )
+                            .put(
+                                "option",
+                                JSONObject().put("type", "string")
+                                    .put("description", "Exact visible name of the option."),
+                            ),
+                    ).put(
+                        "required",
+                        JSONArray().put("snapshot_id").put("node_id").put("option"),
+                    ),
+                ),
+        )
+    }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_find_node")
+                .put(
+                    "description",
+                    "Finds text on screen and returns where it is, without tapping it. " +
+                        "With scroll=true it scrolls for you and returns only the result, " +
+                        "which is far cheaper than reading the whole screen after every " +
+                        "scroll. An exact name wins over one that merely contains it.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put(
+                                "text",
+                                JSONObject().put("type", "string").put("minLength", 1)
+                                    .put("description", "The text to look for."),
+                            )
+                            .put(
+                                "scroll",
+                                JSONObject().put("type", "boolean").put("default", false)
+                                    .put("description", "Scroll down while looking."),
+                            )
+                            .put(
+                                "max_scrolls",
+                                JSONObject().put("type", "integer")
+                                    .put("minimum", 0).put("maximum", MAX_FIND_SCROLLS)
+                                    .put("default", DEFAULT_FIND_SCROLLS),
+                            ),
+                    ).put("required", JSONArray().put("text")),
+                ),
+        )
+    }.also { result ->
         // 어댑터가 담당하는 device tool(screenshot/back/scroll/type_text…)을 한 번에 노출.
         val tools = result.getJSONArray("tools")
         mcpDeviceToolAdapter.definitions().forEach { definition -> tools.put(definition) }
@@ -536,6 +643,9 @@ class PocketMcpHttpServer(
             "device_get_field" -> getField(arguments)
             "device_type_node" -> typeNode(arguments)
             "device_set_progress" -> setProgress(arguments)
+            "device_set_checked" -> setChecked(arguments)
+            "device_select_option" -> selectOption(arguments)
+            "device_find_node" -> findNode(arguments)
             else -> if (mcpDeviceToolAdapter.handles(name)) {
                 mcpDeviceToolAdapter.call(name, arguments)
             } else {
@@ -707,6 +817,276 @@ class PocketMcpHttpServer(
      * 적었는데 그 슬라이더가 0~10이면 거절해봐야 다시 물어볼 뿐이고, 최댓값으로
      * 두는 게 의도에 더 가깝다. 대신 실제로 넣은 값을 응답에 담아 알려준다.
      */
+    /**
+     * 체크박스·스위치를 원하는 상태로 둔다.
+     *
+     * tap과 따로 두는 이유는 tap이 상태를 뒤집기만 하기 때문이다. 부르는 쪽이
+     * "켜라"를 말하려면 지금 켜져 있는지 먼저 알아야 하고, 모르면 껐다 켰다를
+     * 반복한다. 여기서는 이미 그 상태면 아무것도 하지 않는다.
+     *
+     * 누른 뒤에 다시 읽어 확인한다. 누르는 데 성공했다고 상태가 바뀐 것은
+     * 아니다 — 약관처럼 다른 조건이 갖춰져야 켜지는 체크박스가 있다.
+     */
+    private fun setChecked(arguments: JSONObject): JSONObject {
+        if (!arguments.has("checked")) {
+            return toolError("MISSING_CHECKED", "checked 값이 필요합니다.")
+        }
+        val observed = lastSnapshot.get()
+            ?: return toolError("NO_OBSERVATION", "device_observe를 먼저 호출하세요.")
+        if (arguments.optString("snapshot_id") != observed.fingerprint.hash) {
+            return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
+        }
+        val nodeId = arguments.optString("node_id")
+        val target = observed.nodes.firstOrNull { it.id == nodeId }
+            ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
+        val before = target.checked
+            ?: return toolError(
+                "NOT_CHECKABLE",
+                "체크 상태를 가진 노드가 아닙니다: $nodeId. device_observe에 켜짐/꺼짐이 " +
+                    "표시된 노드에만 쓸 수 있습니다.",
+            )
+
+        val wanted = arguments.optBoolean("checked")
+        if (before == wanted) {
+            return toolResult(
+                JSONObject()
+                    .put("success", true)
+                    .put("changed", false)
+                    .put("node_id", nodeId)
+                    .put("checked", wanted)
+                    .put("message", "이미 요청한 상태입니다. 아무것도 하지 않았습니다."),
+            )
+        }
+
+        val clicked = clickNode(arguments)
+        if (clicked.optBoolean("isError")) return clicked
+
+        val after = lastSnapshot.get()
+        val now = after?.nodes?.firstOrNull { isSameToggle(target, it) }?.checked
+        // 못 찾은 것과 틀린 것을 가른다. 켜지면서 화면에 행이 하나 늘면 토글이
+        // 밀려나 다시 찾지 못하는데(실측: "편안하게 화면 보기"가 68px 내려갔다),
+        // 그때 실패로 답하면 부르는 쪽이 다시 눌러 도로 끈다. 눌린 것은
+        // clickNode가 이미 확인했으므로, 확인만 못 했다고 말한다.
+        if (now == null) {
+            return toolResult(
+                JSONObject()
+                    .put("success", true)
+                    .put("changed", true)
+                    .put("verified", false)
+                    .put("node_id", nodeId)
+                    .put("after_snapshot_id", after?.fingerprint?.hash ?: "")
+                    .put(
+                        "message",
+                        "눌렀지만 그 토글을 다시 찾지 못해 상태를 확인하지 못했습니다. " +
+                            "화면이 바뀌었을 수 있습니다 — device_observe로 확인하세요.",
+                    ),
+            )
+        }
+        if (now != wanted) {
+            return toolError(
+                "CHECK_STATE_NOT_REACHED",
+                "눌렀지만 상태가 $wanted 로 바뀌지 않았습니다(지금 $now). 다른 조건이 " +
+                    "먼저 갖춰져야 하는 항목일 수 있습니다.",
+            )
+        }
+        return toolResult(
+            JSONObject()
+                .put("success", true)
+                .put("changed", true)
+                .put("verified", true)
+                .put("node_id", nodeId)
+                .put("checked", now)
+                .put("after_snapshot_id", after.fingerprint.hash),
+        )
+    }
+
+    /**
+     * 드롭다운을 열고 정확히 그 이름의 항목을 고른다.
+     *
+     * 두 번의 tap이 한 도구인 이유는 그 사이 화면을 부르는 쪽이 볼 필요가 없기
+     * 때문이다. 열린 목록은 눌러야 할 것 하나만 있는 중간 상태다. 나눠두면
+     * 목록이 열린 채로 관찰이 한 번 더 오가고, 그동안 목록이 닫히기도 한다.
+     *
+     * 이름은 정확히 같은 것만 고른다. 부분일치를 허용하면 "서울"이 "서울특별시"와
+     * "서울맛집" 둘 다에 걸리는데, 어느 쪽인지 모르면 고르지 않는 편이 낫다.
+     */
+    private fun selectOption(arguments: JSONObject): JSONObject {
+        val option = arguments.optString("option").trim()
+        if (option.isEmpty() || option.length > MAX_OPTION_LENGTH) {
+            return toolError("INVALID_OPTION", "option은 1~${MAX_OPTION_LENGTH}자여야 합니다.")
+        }
+        val observed = lastSnapshot.get()
+            ?: return toolError("NO_OBSERVATION", "device_observe를 먼저 호출하세요.")
+        if (arguments.optString("snapshot_id") != observed.fingerprint.hash) {
+            return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
+        }
+        val selectorId = arguments.optString("node_id")
+        val selector = observed.nodes.firstOrNull { it.id == selectorId }
+            ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
+        if (!isSelectorNode(selector)) {
+            return toolError(
+                "NOT_A_SELECTOR",
+                "고르는 칸으로 보이지 않습니다: $selectorId. 스피너·드롭다운이 아니면 " +
+                    "device_click_node로 직접 누르세요.",
+            )
+        }
+
+        val opened = clickNode(arguments)
+        if (opened.optBoolean("isError")) return opened
+
+        val options = lastSnapshot.get()
+            ?: return toolError("NO_ACTIVE_WINDOW", "열린 목록을 읽지 못했습니다.")
+        val optionNode = options.nodes.firstOrNull { node ->
+            node.visibleToUser && node.enabled && labelsOf(node).any { label ->
+                label.trim().equals(option, ignoreCase = true)
+            }
+        } ?: return toolError(
+            "OPTION_NOT_FOUND",
+            "열린 목록에서 \"$option\" 과 정확히 같은 항목을 찾지 못했습니다. " +
+                "device_observe로 목록을 읽고 이름을 그대로 쓰세요.",
+        )
+
+        val selected = clickNode(
+            JSONObject()
+                .put("snapshot_id", options.fingerprint.hash)
+                .put("node_id", optionNode.id),
+        )
+        if (selected.optBoolean("isError")) return selected
+
+        return toolResult(
+            JSONObject()
+                .put("success", true)
+                .put("node_id", selectorId)
+                .put("option", option)
+                .put("after_snapshot_id", lastSnapshot.get()?.fingerprint?.hash ?: ""),
+        )
+    }
+
+    /**
+     * 화면에서 글자를 찾는다. 누르지는 않는다.
+     *
+     * observe가 돌려주는 노드에는 상한이 있고, 긴 목록은 화면 밖에 있다. 찾는
+     * 것이 어디 있는지만 알면 되는데 그러려고 observe를 여러 번 받으면 그때마다
+     * 화면 전체가 실려 온다. 여기서는 스크롤을 기기 안에서 돌리고 결과 한 줄만
+     * 돌려준다.
+     *
+     * 누르지 않는 것은 일부러다. 찾은 것이 맞는지는 부르는 쪽이 판단할 일이고,
+     * 여기서 눌러버리면 이름이 겹치는 항목을 잘못 골랐을 때 되돌릴 수 없다.
+     */
+    private fun findNode(arguments: JSONObject): JSONObject {
+        val query = arguments.optString("text").trim()
+        if (query.isEmpty() || query.length > MAX_OPTION_LENGTH) {
+            return toolError("INVALID_QUERY", "text는 1~${MAX_OPTION_LENGTH}자여야 합니다.")
+        }
+        val shouldScroll = arguments.optBoolean("scroll", false)
+        val maxScrolls = arguments.optInt("max_scrolls", DEFAULT_FIND_SCROLLS)
+            .coerceIn(0, MAX_FIND_SCROLLS)
+        val wanted = query.lowercase()
+
+        var scrolls = 0
+        while (true) {
+            val snapshot = captureSnapshotOnMainThread()
+                ?: return toolError("NO_ACTIVE_WINDOW", "현재 화면을 읽을 수 없습니다.")
+            lastSnapshot.set(snapshot)
+
+            // 정확히 같은 것을 먼저 본다. 부분일치는 그다음이다 — "설정"을 찾을 때
+            // "설정" 항목이 있는데 "알림 설정"이 먼저 잡히면 엉뚱한 데로 간다.
+            val visible = snapshot.nodes.filter { it.visibleToUser }
+            val match = visible.firstOrNull { node ->
+                labelsOf(node).any { it.trim().equals(query, ignoreCase = true) }
+            } ?: visible.firstOrNull { node ->
+                labelsOf(node).any { it.lowercase().contains(wanted) }
+            }
+
+            if (match != null) {
+                return toolResult(
+                    JSONObject()
+                        .put("success", true)
+                        .put("found", true)
+                        .put("snapshot_id", snapshot.fingerprint.hash)
+                        .put("node_id", match.id)
+                        .put("label", labelsOf(match).firstOrNull() ?: "")
+                        .put("scrolls_performed", scrolls),
+                )
+            }
+
+            if (!shouldScroll || scrolls >= maxScrolls) {
+                return toolResult(
+                    JSONObject()
+                        .put("success", true)
+                        .put("found", false)
+                        .put("snapshot_id", snapshot.fingerprint.hash)
+                        .put("scrolls_performed", scrolls)
+                        .put(
+                            "message",
+                            if (shouldScroll) {
+                                "${scrolls}번 훑었지만 찾지 못했습니다."
+                            } else {
+                                "지금 화면에 없습니다. scroll=true로 훑어볼 수 있습니다."
+                            },
+                        ),
+                )
+            }
+
+            val scrolled = mcpDeviceToolAdapter.call(
+                "device_scroll",
+                JSONObject().put("direction", "down"),
+            )
+            if (scrolled.optBoolean("isError")) return scrolled
+            scrolls += 1
+            Thread.sleep(ACTION_VERIFY_POLL_MS)
+        }
+    }
+
+    /** 라벨이 될 수 있는 글자들. 빈 것은 빼고 순서대로. */
+    private fun labelsOf(node: UiNode): List<String> =
+        listOfNotNull(node.text, node.contentDescription, node.hint)
+            .filter(String::isNotBlank)
+
+    /**
+     * 방금 누른 그 토글인지. 누른 뒤에 다시 찾을 때만 쓴다.
+     *
+     * isStillThere와 기준이 다르다. 그쪽은 "누르기 전과 화면이 같은가"를 보므로
+     * 자리가 그대로여야 하지만, 여기는 이미 누른 뒤다 — 토글이 켜지면서 설명
+     * 행이 하나 생기면 토글 자체가 아래로 밀린다(실측 68px). 자리를 요구하면
+     * 성공한 동작을 못 찾는다.
+     *
+     * 그래서 라벨을 먼저 본다. 상태가 바뀌어도 그 칸의 이름은 그대로다. 라벨이
+     * 없는 토글은 이름으로 가릴 수 없으니 그때만 자리로 찾는다.
+     */
+    private fun isSameToggle(expected: UiNode, actual: UiNode): Boolean {
+        if (actual.checked == null) return false
+        val label = labelsOf(expected)
+        return if (label.isEmpty()) {
+            sameSpot(expected.bounds, actual.bounds)
+        } else {
+            labelsOf(actual) == label
+        }
+    }
+
+    /**
+     * 눌러서 목록을 여는 칸인지.
+     *
+     * className만으로는 웹뷰를 못 잡는다 — 거기서는 전부 android.view.View다.
+     * 앱이 붙인 roleDescription이 그때 유일한 표시다. 라벨로도 보되 "선택"처럼
+     * 흔한 말은 clickable일 때만 인정한다.
+     */
+    private fun isSelectorNode(node: UiNode): Boolean {
+        val widget = node.className.orEmpty().lowercase()
+        val role = node.roleDescription.orEmpty().lowercase()
+        val label = labelsOf(node).joinToString(" ").lowercase()
+        return widget.contains("spinner") ||
+            widget.contains("autocompletetextview") ||
+            role.contains("dropdown") ||
+            role.contains("drop-down") ||
+            role.contains("combo") ||
+            role.contains("menu popup") ||
+            role.contains("드롭다운") ||
+            role.contains("메뉴 팝업") ||
+            label.contains("드롭다운") ||
+            (node.clickable && (label.contains("선택") || label.contains("옵션")))
+    }
+
     private fun setProgress(arguments: JSONObject): JSONObject {
         val snapshotId = arguments.optString("snapshot_id")
         val nodeId = arguments.optString("node_id")
@@ -1327,5 +1707,12 @@ class PocketMcpHttpServer(
         private const val MAIN_THREAD_TIMEOUT_MS = 3_000L
         private const val ACTION_VERIFY_TIMEOUT_MS = 3_000L
         private const val ACTION_VERIFY_POLL_MS = 150L
+
+        /** option·text 인자의 길이 상한. 화면 라벨이 이보다 길 일이 없다. */
+        private const val MAX_OPTION_LENGTH = 200
+
+        /** find_node가 훑을 횟수. 기본은 짧게, 상한은 화면 몇 개 분량으로 둔다. */
+        private const val DEFAULT_FIND_SCROLLS = 3
+        private const val MAX_FIND_SCROLLS = 5
     }
 }

@@ -238,6 +238,10 @@ class AgentAccessibilityService : AccessibilityService() {
             parentId = parentId,
             visibleToUser = node.isVisibleToUser,
             password = node.isPassword,
+            // AccessibilityNodeInfo에 공개 게터가 없다. 앱이 AndroidX로 붙이면
+            // extras 번들에 이 키로 들어간다(ViewCompat.setAccessibilityDelegate →
+            // AccessibilityNodeInfoCompat.setRoleDescription).
+            roleDescription = node.extras?.getCharSequence(ROLE_DESCRIPTION_KEY)?.toString(),
             range = node.rangeInfo?.let { info ->
                 UiRange(min = info.min, max = info.max, current = info.current)
             },
@@ -700,6 +704,9 @@ class AgentAccessibilityService : AccessibilityService() {
         private const val TREE_TAG = "AgentUiTree"
         private const val MAX_NODES = 1_500
         private const val MAX_DEPTH = 80
+
+        /** AndroidX가 roleDescription을 담아 보내는 extras 키. 플랫폼 상수가 아니다. */
+        private const val ROLE_DESCRIPTION_KEY = "AccessibilityNodeInfo.roleDescription"
         private const val SETTINGS_PACKAGE = "com.android.settings"
 
         /** 주소창을 가진 앱으로 볼 패키지 조각. */
