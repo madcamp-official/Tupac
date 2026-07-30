@@ -213,14 +213,14 @@ object FieldAssign {
     fun stepsNow(
         nodes: List<UiNode>,
         packageName: String,
-        values: Map<String, String>,
+        wanted: Set<String>,
         order: List<String>,
         wantSubmit: Boolean,
         filled: Set<String>,
         submitted: Boolean,
         fields: Map<String, String> = SecretVault.FIELDS,
     ): Plan {
-        val found = inputTargets(nodes, packageName, values.keys, fields)
+        val found = inputTargets(nodes, packageName, wanted, fields)
             .associate { (node, field) -> field to node }
 
         val steps = mutableListOf<Step>()
@@ -232,27 +232,21 @@ object FieldAssign {
             // 바뀌어 더는 그 필드로 안 잡히는데(빈 칸의 라벨은 hint에만 있다),
             // 그걸 "칸이 없음"으로 적으면 끝난 일을 못 한 일처럼 보여주게 된다.
             if (field in filled) {
-                // 끝난 단계도 값과 함께 보여준다. 기기 안 모델은 곁에 있는 예시를
-                // 베껴 답하는데, 예시에 값이 없으면 값을 어떻게 쓰는지 모른다.
-                // 실측(공백 든 주소, 20번씩): 값 예시가 0개면 0/20, 3개면 20/20.
                 steps += Step("fill", field, found[field]?.id,
-                              "fill ${found[field]?.id ?: "-"} ${values[field]}",
+                              "fill ${found[field]?.id ?: "-"} $field",
                               "끝남", done = true)
                 continue
             }
             val node = found[field]
-            // 답으로 베낄 줄에는 값 대신 필드 이름을 둔다. 값은 옆의 설명으로 함께
-            // 건네되, 그걸 옮겨 적게 하지는 않는다. 실측: "홍길동"·"04524"는 그대로
-            // 베꼈지만 공백이 든 주소에서는 값을 통째로 빠뜨리고 "type node_22"만 냈다.
+            // 줄에는 필드 이름만 둔다. 예전에는 값을 함께 적었는데, 그건 기기 안
+            // 모델이 곁의 예시를 베껴 답하게 하려던 것이었다. 그 모델을 걷어낸
+            // 뒤로 이 줄을 읽는 것은 code뿐이라 값을 담을 이유가 없다 — 담으면
+            // 계획이 오가는 내내 평문이 함께 다닌다.
             val step = Step(
                 action = "fill",
                 field = field,
                 nodeId = node?.id,
-                // "type"이 아니라 "fill"이다. 화면 표기가 "node_12 [type] 라벨"이라
-                // 답 형식이 "type node_12 값"이면 앞부분이 겹친다. 그러면 모델이
-                // "type node_12"까지만 쓰고 화면 줄을 완성했다고 여긴다.
-                // 실측: 카카오톡 로그인에서 type 형식은 0/10, fill 형식은 10/10.
-                line = if (node != null) "fill ${node.id} ${values[field]}"
+                line = if (node != null) "fill ${node.id} $field"
                        else "(화면에 $field 칸이 없음)",
                 why = if (node != null) "${labelOf(node).take(20)} 칸" else "$field — 못 찾음",
                 done = false,

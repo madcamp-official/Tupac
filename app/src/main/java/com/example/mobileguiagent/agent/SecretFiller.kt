@@ -91,12 +91,18 @@ object SecretFiller {
         // 이전 채우기의 기억을 버린다. 평문 값을 필요한 창 밖까지 들고 있지 않는다.
         FilledSecrets.clear()
 
-        return runPlan(service, values, submit, missing)
+        // 채우기가 끝나면 값을 덮어쓴다. 여기가 값을 가장 오래 들고 있는 자리다 —
+        // 화면을 여러 번 훑는 동안 계속 살아 있다.
+        return try {
+            runPlan(service, values, submit, missing)
+        } finally {
+            values.values.forEach(SecretVault::wipe)
+        }
     }
 
     private fun runPlan(
         service: AgentAccessibilityService,
-        values: Map<String, String>,
+        values: Map<String, CharArray>,
         submit: Boolean,
         missing: List<String>,
     ): Outcome {
@@ -120,7 +126,7 @@ object SecretFiller {
             val plan = FieldAssign.stepsNow(
                 nodes = screen.nodes,
                 packageName = screen.packageName,
-                values = values,
+                wanted = values.keys,
                 order = order,
                 wantSubmit = submit && unplaced.isEmpty(),
                 filled = filled,
@@ -147,7 +153,7 @@ object SecretFiller {
                     val field = step.field ?: continue
                     // 값은 여기서만 꺼내 쓴다. 로그에도 결과 메시지에도 싣지 않는다.
                     val ok = onMainThread {
-                        service.setTextOnSnapshotNode(node, screen.packageName, values.getValue(field))
+                        service.setTextOnSnapshotNode(node, screen.packageName, String(values.getValue(field)))
                     }
                     if (ok != true) {
                         return Outcome.Failed(
@@ -158,7 +164,7 @@ object SecretFiller {
                     filled += field
                     // 넣은 값을 기억해둔다. 이 값이 화면에 남아 다음 관찰에
                     // 실려 나가는 것을 막으려면, 무엇을 넣었는지 알아야 한다.
-                    FilledSecrets.remember(field, values.getValue(field))
+                    FilledSecrets.remember(field, String(values.getValue(field)))
                 }
 
                 "tap" -> {
@@ -208,7 +214,7 @@ object SecretFiller {
         service: AgentAccessibilityService,
         requested: List<String>,
         packageName: String,
-    ): Map<String, String> {
+    ): Map<String, CharArray> {
         val owner = onMainThread {
             service.browserHost()?.let { host -> SecretVault.serviceForHost(service, host) }
                 ?: packageName

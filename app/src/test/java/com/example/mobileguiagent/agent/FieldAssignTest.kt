@@ -137,14 +137,13 @@ class FieldAssignTest {
     fun `짚어주는 줄은 fill 형식이고 값이 들어간다`() {
         val plan = FieldAssign.stepsNow(
             kakaoLogin, "com.kakao.talk",
-            values = mapOf("username" to "minsu", "password" to "pw1234"),
+            wanted = setOf("username", "password"),
             order = listOf("username", "password"),
             wantSubmit = true, filled = emptySet(), submitted = false,
         )
         assertEquals(
-            "화면 표기가 \"node_12 [type] 라벨\"이라 type 형식은 앞부분이 겹친다. " +
-                "실측: 카카오톡 로그인에서 type 0/10, fill 10/10",
-            "fill node_12 minsu",
+            "줄에는 필드 이름만 담는다. 값을 담으면 계획이 오가는 내내 평문이 함께 다닌다",
+            "fill node_12 username",
             plan.current?.line,
         )
         assertNull("막힐 이유가 없다", plan.blocked)
@@ -154,19 +153,18 @@ class FieldAssignTest {
     fun `채운 칸은 다시 찾지 않는다`() {
         val plan = FieldAssign.stepsNow(
             kakaoLogin, "com.kakao.talk",
-            values = mapOf("username" to "minsu", "password" to "pw1234"),
+            wanted = setOf("username", "password"),
             order = listOf("username", "password"),
             wantSubmit = true, filled = setOf("username"), submitted = false,
         )
         assertEquals(
             "값을 넣으면 라벨이 값으로 바뀐다. 다시 찾으면 '칸이 없음'이 된다",
-            "fill node_15 pw1234",
+            "fill node_15 password",
             plan.current?.line,
         )
         assertEquals(
-            "끝난 단계도 값과 함께 보여준다. 값 예시가 없으면 모델이 값을 못 쓴다 " +
-                "(실측: 예시 0개면 0/20, 3개면 20/20)",
-            "fill node_12 minsu",
+            "끝난 단계도 목록에 남는다. 무엇을 이미 채웠는지 보여야 한다",
+            "fill node_12 username",
             plan.steps.first { it.done }.line,
         )
     }
@@ -180,7 +178,7 @@ class FieldAssignTest {
         )
         val plan = FieldAssign.stepsNow(
             popped, "com.kakao.talk",
-            values = mapOf("username" to "minsu", "password" to "pw1234"),
+            wanted = setOf("username", "password"),
             order = listOf("username", "password"),
             wantSubmit = true, filled = setOf("username"), submitted = false,
         )

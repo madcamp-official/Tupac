@@ -730,7 +730,7 @@ class PocketMcpHttpServer(
             }
         }
 
-        val value = AtomicReference<String?>(null)
+        val value = AtomicReference<CharArray?>(null)
         val app = AtomicReference<String?>(null)
         val latch = CountDownLatch(1)
         Handler(Looper.getMainLooper()).post {
@@ -756,7 +756,16 @@ class PocketMcpHttpServer(
                     "$field 값이 저장돼 있지 않습니다."
                 },
             )
-        return toolResult(JSONObject().put("success", true).put("field", field).put("value", found))
+        // 이 도구만은 값을 밖으로 내보낸다(위 주석 참고). JSON에 실으려면 String이
+        // 되어야 하므로 여기서 CharArray의 이점이 끊긴다 — 도구 자체를 없애는 것이
+        // 맞다는 판단은 그대로다.
+        return try {
+            toolResult(
+                JSONObject().put("success", true).put("field", field).put("value", String(found)),
+            )
+        } finally {
+            SecretVault.wipe(found)
+        }
     }
 
     /** 스냅샷에서 고른 입력창에 글자를 넣는다. 포커스에 기대지 않는다. */
@@ -1180,7 +1189,15 @@ class PocketMcpHttpServer(
                     },
                 )
             } else {
-                result.set(service.setTextOnSnapshotNode(target, observed.packageName, value))
+                // 화면에 넣는 순간에만 String으로 바꾼다. 접근성 API가
+                // CharSequence를 요구해서 여기서는 사본이 한 번 생긴다.
+                try {
+                    result.set(
+                        service.setTextOnSnapshotNode(target, observed.packageName, String(value)),
+                    )
+                } finally {
+                    SecretVault.wipe(value)
+                }
             }
             latch.countDown()
         }

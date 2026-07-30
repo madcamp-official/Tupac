@@ -6,6 +6,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
+import java.nio.ByteBuffer
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -126,11 +127,29 @@ object SecretVault {
      */
     fun accountOwner(service: AgentAccessibilityService): AccountOwner {
         service.browserHost()?.let { host ->
-            return AccountOwner(serviceForHost(service, host), host)
+            val owner = serviceForHost(service, host)
+            // 웹으로 넘어간 로그인이라도 어느 앱 계정인지 가려졌으면 그 앱 이름을
+            // 보여준다. 못 가렸으면 주소가 사람에게 더 도움이 된다.
+            return AccountOwner(owner, owner?.let { appLabel(service, it) } ?: host)
         }
         val appPackage = service.rootInActiveWindow?.packageName?.toString()
-        return AccountOwner(appPackage, appPackage ?: "알 수 없는 화면")
+        return AccountOwner(
+            appPackage,
+            appPackage?.let { appLabel(service, it) } ?: "알 수 없는 화면",
+        )
     }
+
+    /**
+     * 사람이 부르는 앱 이름. 못 찾으면 패키지 이름 그대로.
+     *
+     * "com.instagram.android의 계정이 없습니다"보다 "Instagram의 계정이
+     * 없습니다"가 사람에게도 모델에게도 읽힌다. 이름을 못 찾는 경우(설치가
+     * 지워졌거나 패키지가 아닌 문자열)에는 있는 것을 쓴다.
+     */
+    private fun appLabel(context: Context, packageName: String): String = runCatching {
+        val manager = context.packageManager
+        manager.getApplicationLabel(manager.getApplicationInfo(packageName, 0)).toString()
+    }.getOrDefault(packageName)
 
     fun removeService(context: Context, service: String) {
         val editor = prefs(context).edit()
@@ -146,7 +165,7 @@ object SecretVault {
      *
      * @param service 계정 필드일 때 어느 앱 것인지. 공통 정보면 무시한다.
      */
-    fun reveal(context: Context, field: String, service: String? = null): String? {
+    fun reveal(context: Context, field: String, service: String? = null): CharArray? {
         val key = when {
             isAccountField(field) -> accountKey(service ?: return null, field)
             PROFILE_FIELDS.containsKey(field) -> profileKey(field)
@@ -157,6 +176,21 @@ object SecretVault {
             Log.e(TAG, "Unable to read $field", error)
             null
         }
+    }
+
+    /**
+     * 다 쓴 값을 지운다. 부르는 쪽이 반드시 부른다.
+     *
+     * String으로 두지 않는 이유가 이것이다. String은 불변이라 지울 방법이 없고
+     * GC가 가져갈 때까지 힙에 남는다. 힙 덤프 한 번이면 비밀번호가 나온다.
+     * CharArray는 덮어쓸 수 있다.
+     *
+     * 완전하지는 않다 — 접근성 API가 CharSequence를 요구해서 화면에 넣는 순간
+     * String 사본이 한 번 생기고, FilledSecrets도 가린 값을 되찾으려고 String을
+     * 들고 있다. 여기서 줄이는 것은 "채우기가 도는 내내 살아 있던 사본"이다.
+     */
+    fun wipe(secret: CharArray?) {
+        secret?.fill(' ')
     }
 
     // ─────────────────────────────── 내부 ───────────────────────────────
@@ -194,7 +228,13 @@ object SecretVault {
         return Base64.encodeToString(cipher.iv + encrypted, Base64.NO_WRAP)
     }
 
-    private fun decrypt(stored: String): String {
+    /**
+     * 복호화. 중간에 String을 만들지 않는다.
+     *
+     * String(bytes)로 받으면 그 순간 지울 수 없는 사본이 하나 생긴다. 바이트를
+     * 직접 문자로 옮기고 바이트 쪽은 덮어쓴다.
+     */
+    private fun decrypt(stored: String): CharArray {
         val bytes = Base64.decode(stored, Base64.NO_WRAP)
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(
@@ -202,7 +242,13 @@ object SecretVault {
             secretKey(),
             GCMParameterSpec(TAG_BITS, bytes, 0, IV_BYTES),
         )
-        return String(cipher.doFinal(bytes, IV_BYTES, bytes.size - IV_BYTES))
+        val plain = cipher.doFinal(bytes, IV_BYTES, bytes.size - IV_BYTES)
+        return try {
+            val decoded = Charsets.UTF_8.decode(ByteBuffer.wrap(plain))
+            CharArray(decoded.remaining()).also(decoded::get)
+        } finally {
+            plain.fill(0)
+        }
     }
 
     /** 키는 Keystore 안에서 만들어지고 밖으로 나오지 않는다. 없으면 처음 한 번 만든다. */
