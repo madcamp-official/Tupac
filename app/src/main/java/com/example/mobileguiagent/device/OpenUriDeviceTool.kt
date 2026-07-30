@@ -89,11 +89,13 @@ object OpenUriDeviceTool : DeviceTool {
         }
     }
 
+    /**
+     * 안드로이드가 한 번만 파싱하고, 판단은 [SafeUri]에 맡긴다. 여는 데 쓰는 것과
+     * 검사하는 것이 같은 파싱 결과여야 "검사는 통과했는데 다른 곳이 열리는" 일이 없다.
+     */
     private fun safeHttpsUri(value: String): Uri? {
         val uri = runCatching { Uri.parse(value) }.getOrNull() ?: return null
-        if (!uri.scheme.equals("https", ignoreCase = true)) return null
-        if (uri.host.isNullOrBlank() || uri.userInfo != null) return null
-        return uri
+        return uri.takeIf { SafeUri.allowed(it.scheme, it.host, it.userInfo) }
     }
 
     private const val TAG = "OpenUriDeviceTool"
