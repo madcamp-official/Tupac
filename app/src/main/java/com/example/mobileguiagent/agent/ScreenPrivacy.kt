@@ -190,9 +190,23 @@ object ScreenPrivacy {
      * 사람 이름은 남는다. 짧아서 걸러지지 않고, 누를 항목을 가리키려면 필요하다.
      * 이름도 개인정보라는 점에서 이 방식은 완전하지 않다.
      */
-    fun redact(label: String, packageName: String, nodeCount: Int): String {
+    fun redact(
+        label: String,
+        packageName: String,
+        nodeCount: Int,
+        isFieldHint: Boolean = false,
+    ): String {
         val masked = mask(label)
         if (masked.length <= CONTENT_LENGTH) return masked
+
+        // 입력창의 hint는 앱이 그 칸에 붙여둔 안내 문구다. 대화 내용도 사진
+        // 설명도 hint로 들어오지 않으므로 길이로 가릴 이유가 없다. 가려버리면
+        // 부르는 쪽이 그 칸이 무엇인지 알 수 없다 — 실측: 인스타그램 로그인
+        // 화면의 "사용자 이름, 이메일 주소 또는 휴대폰 번호"(25자)가
+        // <내용 25자>가 되어 아이디 칸을 알아볼 수 없었다. 낱말 목록을 늘려
+        // 쫓아가는 것보다 이 근거가 확실하다 — 명사구 라벨은 UI_MARKERS에도
+        // 격식체 어미에도 걸리지 않는다.
+        if (isFieldHint) return masked
 
         if (!isContentApp(packageName)) return masked
         if (nodeCount < DIALOG_NODES || isUiText(masked)) return masked

@@ -1061,16 +1061,23 @@ class PocketMcpHttpServer(
         // 아무 형식도 아닌 값은 뒤엣것만이 알아본다.
         fun clean(value: String): String =
             FilledSecrets.mask(ScreenPrivacy.redact(value, snapshot.packageName, nodeCount))
+        // 입력창의 hint만 다르게 다듬는다. 식별번호 마스킹과 방금 채운 값 가리기는
+        // 그대로 걸고, 길이로 통째로 가리는 것만 면제한다(ScreenPrivacy.redact 참고).
+        fun cleanHint(value: String): String =
+            FilledSecrets.mask(
+                ScreenPrivacy.redact(value, snapshot.packageName, nodeCount, isFieldHint = true),
+            )
 
         val shown = meaningful.take(maxNodes)
         // 라벨은 세 곳에 흩어져 있다. 빈 칸일 때는 hint만이 그 칸이 무엇인지
         // 알려주고, 값이 들어가면 text가 그 값이 된다. 셋 중 있는 것을 쓴다.
         // 부모를 따라가야 하므로 걸러내기 전의 전체 노드가 필요하다.
         val screen = ScreenLines.render(shown, snapshot.nodes) { node ->
-            listOfNotNull(node.text, node.contentDescription, node.hint)
-                .map(::clean)
-                .firstOrNull { it.isNotBlank() }
-                .orEmpty()
+            listOfNotNull(
+                node.text?.let(::clean),
+                node.contentDescription?.let(::clean),
+                node.hint?.let { hint -> if (node.editable) cleanHint(hint) else clean(hint) },
+            ).firstOrNull { it.isNotBlank() }.orEmpty()
         }
 
         return JSONObject()

@@ -186,10 +186,18 @@ def render_screen(observation, all_nodes, redact=False):
     lines = [f"SCREEN (app: {observation['package_name']})"]
     shown = 0
     for node in observation["nodes"]:
-        label = (node.get("text") or node.get("content_description")
-                 or node.get("hint") or "").replace("\n", " ")
+        # hint에서 온 라벨은 마스킹 기준이 다르다. 입력창의 hint는 앱이 그 칸에
+        # 붙여둔 안내 문구라 길이로 가리지 않는다(privacy.redact 참고).
+        label = (node.get("text") or node.get("content_description") or "")
+        from_hint = not label and bool(node.get("hint"))
+        if from_hint:
+            label = node["hint"]
+        label = label.replace("\n", " ")
         if redact:
-            label = privacy.redact(label, observation)
+            label = privacy.redact(
+                label, observation,
+                field_hint=from_hint and bool(node.get("editable")),
+            )
         span = node.get("range")
         if not label and not span and not all_nodes:
             continue                      # 라벨 없는 노드는 모델이 고를 근거가 없다

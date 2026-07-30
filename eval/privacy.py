@@ -115,7 +115,7 @@ def is_ui_text(label):
     return stripped.endswith(FORMAL_ENDINGS)
 
 
-def redact(label, observation):
+def redact(label, observation, field_hint=False):
     """클라우드로 내보낼 라벨을 다듬는다.
 
     두 단계다. 먼저 형식이 뚜렷한 식별번호를 자리표시자로 바꾸고, 그다음
@@ -123,14 +123,22 @@ def redact(label, observation):
 
     다만 무턱대고 길이로만 가르면 안내문까지 가려진다(실측: "비밀번호가 일치하지
     않습니다"가 통째로 사라져, 모델이 로그인 실패 이유를 볼 수 없었다). 그래서
-    두 가지를 예외로 둔다. 항목이 적은 화면(대화상자·로딩)과, 앱이 건네는
-    말로 보이는 문구다.
+    세 가지를 예외로 둔다. 항목이 적은 화면(대화상자·로딩), 앱이 건네는 말로
+    보이는 문구, 그리고 입력창의 hint다.
+
+    field_hint는 그 라벨이 입력창의 hint에서 왔다는 뜻이다. hint는 앱이 그 칸에
+    붙여둔 안내 문구여서 대화 내용이 들어올 자리가 아니다. 실측: 인스타그램
+    로그인 화면의 "사용자 이름, 이메일 주소 또는 휴대폰 번호"(25자)가
+    <내용 25자>로 사라져 모델이 아이디 칸을 알아볼 수 없었다. 명사구 라벨은
+    UI_MARKERS에도 격식체 어미에도 걸리지 않아 낱말로는 쫓아갈 수 없다.
 
     사람 이름은 남는다. 짧아서 걸러지지 않고, 누를 항목을 가리키려면 필요하다.
     이름도 개인정보라는 점에서 이 방식은 완전하지 않다.
     """
     label = mask(label)
     if len(label) <= CONTENT_LENGTH:
+        return label
+    if field_hint:
         return label
 
     package = (observation.get("package_name") or "").lower()

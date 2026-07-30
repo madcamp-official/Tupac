@@ -187,6 +187,20 @@ LOGIN_ERROR = screen(
     node("node_2", text="확인", clickable=True),
 )
 
+# 인스타그램 로그인 화면. 콘텐츠 앱(대화·사진 설명이 있는 앱) 목록에 들어 있어서
+# 긴 라벨이 통째로 가려지는데, 아이디 칸의 hint가 25자짜리 명사구다. 실측으로
+# <내용 25자>가 되어 바깥 모델이 아이디 칸을 알아볼 수 없었다.
+INSTAGRAM_LOGIN = screen(
+    "com.instagram.android",
+    node("node_18", text="Instagram", clickable=True),
+    node("node_22", text="계정을 잊으셨나요? 도움을 받으세요", clickable=True),
+    node("node_26", hint="사용자 이름, 이메일 주소 또는 휴대폰 번호", editable=True),
+    node("node_28", text="비밀번호"),
+    node("node_32", hint="비밀번호", editable=True, password=True),
+    node("node_33", text="로그인", clickable=True),
+    node("node_36", text="비밀번호를 잊으셨나요?", clickable=True),
+)
+
 
 # ─────────────────────────────── 케이스 ───────────────────────────────
 
@@ -326,6 +340,19 @@ RENDER = [
     (KAKAO_LOGIN, ["node_3 [type,비밀번호]"],
      "비밀번호 칸 표시가 있어야 절차서의 '비밀번호가 아닌 칸이 아이디'가 성립한다"),
     (CHROME_FORM, ["node_2 [type]"], "빈 입력창의 라벨은 hint에만 있다"),
+]
+
+# 클라우드로 나가는 화면 글. (화면, 남아야 할 조각, 가려져야 할 조각, 왜)
+# 여기는 render_screen까지 통과시킨다 — privacy.redact만 따로 부르면 agent.py가
+# hint를 hint로 넘기는지(면제 조건을 실제로 전달하는지)는 확인되지 않는다.
+REDACTED_RENDER = [
+    (INSTAGRAM_LOGIN,
+     ["사용자 이름, 이메일 주소 또는 휴대폰 번호"], [],
+     "입력창의 hint는 앱이 그 칸에 붙인 안내 문구다. 이게 가려지면 모델이 "
+     "아이디 칸을 알아보지 못해 need를 낼 수 없다. 명사구라 UI 낱말·격식체 "
+     "어미에 안 걸려서 낱말 목록으로는 못 살린다"),
+    (KAKAO_CHATS, [], ["내일 회의 자료 준비되면 미리 좀 보내줄 수 있을까?"],
+     "hint 면제를 넣었다고 대화가 새면 안 된다. 면제는 입력창의 hint에만 걸린다"),
 ]
 
 # 어느 자리표시자로 바뀌는지. 순서가 중요해서 값 하나가 여러 패턴에 걸린다.

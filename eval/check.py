@@ -191,6 +191,18 @@ def check_redact(report):
                      f"{must_have!r} 있고 {must_not!r} 없음", repr(actual), why)
 
 
+def check_redacted_render(report):
+    """마스킹된 화면 — 클라우드에 나가는 글에서 무엇이 남고 무엇이 가려지는가"""
+    report.start("마스킹된 화면 (클라우드로 나가는 글)")
+    for observation, must_have, must_not, why in cases.REDACTED_RENDER:
+        drawn = agent.render_screen(observation, all_nodes=False, redact=True)
+        gone = [piece for piece in must_have if piece not in drawn]
+        leaked = [piece for piece in must_not if piece in drawn]
+        report.check(not gone and not leaked, screen_name(observation),
+                     f"남을 것 {must_have} / 가려질 것 {must_not}",
+                     f"사라진 것 {gone} / 샌 것 {leaked}", why)
+
+
 def check_patterns(report):
     """식별번호 패턴 — 어느 자리표시자로 바뀌는가"""
     report.start("식별번호 패턴 (순서가 결과를 바꾼다)")
@@ -227,6 +239,7 @@ CHECKS = {
     "accounts": check_accounts,
     "submit": check_submit,
     "redact": check_redact,
+    "screen_redact": check_redacted_render,
     "patterns": check_patterns,
     "blocked": check_blocked,
     "render": check_render,
