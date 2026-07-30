@@ -19,6 +19,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.io.ByteArrayOutputStream
 import com.example.mobileguiagent.model.NodeActionResult
+import com.example.mobileguiagent.agent.SamePlace
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiRange
 import com.example.mobileguiagent.model.UiSnapshot
@@ -312,7 +313,7 @@ class AgentAccessibilityService : AccessibilityService() {
 
         val bounds = Rect()
         match.node.getBoundsInScreen(bounds)
-        if (bounds != target.bounds) return false      // 같은 자리가 아니면 넣지 않는다
+        if (!sameSpot(bounds, target.bounds)) return false      // 다른 자리면 넣지 않는다
 
         val arguments = Bundle().apply {
             putCharSequence(
@@ -361,7 +362,7 @@ class AgentAccessibilityService : AccessibilityService() {
 
         val bounds = Rect()
         match.node.getBoundsInScreen(bounds)
-        if (bounds != target.bounds) return false      // 같은 자리가 아니면 건드리지 않는다
+        if (!sameSpot(bounds, target.bounds)) return false      // 다른 자리면 건드리지 않는다
 
         val arguments = Bundle().apply {
             putFloat(AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, value)
@@ -627,6 +628,22 @@ class AgentAccessibilityService : AccessibilityService() {
             collectIndexedNativeNodes(node.getChild(index), output, depth + 1)
         }
     }
+
+    /**
+     * 관찰할 때 본 그 자리인지. 완전 일치를 요구하지 않는다.
+     *
+     * 관찰과 조작 사이에 bounds는 조금씩 흔들린다 — 애니메이션이 끝나가는 중,
+     * 스크롤 관성, 리스트 항목 재활용. 1px 어긋난 것을 "다른 자리"로 읽으면
+     * 멀쩡한 입력이 조용히 실패한다(실측: clickNode의 같은 검사에서 "확인"
+     * 버튼 클릭이 한 번 거부됐고 곧바로 다시 부르니 됐다).
+     *
+     * 위의 boundsSimilarityScore는 후보를 고르는 점수라 그대로 둔다. 그건
+     * 여럿 중 하나를 뽑는 일이고, 이건 뽑은 것이 맞는지 보는 일이다.
+     */
+    private fun sameSpot(actual: Rect, expected: Rect): Boolean = SamePlace.enough(
+        actual.left, actual.top, actual.right, actual.bottom,
+        expected.left, expected.top, expected.right, expected.bottom,
+    )
 
     private fun boundsSimilarityScore(
         node: AccessibilityNodeInfo,
