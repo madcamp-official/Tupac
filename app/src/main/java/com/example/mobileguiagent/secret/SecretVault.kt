@@ -1,6 +1,7 @@
 package com.example.mobileguiagent.secret
 
 import android.content.Context
+import com.example.mobileguiagent.accessibility.AgentAccessibilityService
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -106,6 +107,29 @@ object SecretVault {
         return storedServices(context)
             .filter { service -> labels.any { label -> service.lowercase().contains(label) } }
             .singleOrNull()
+    }
+
+    /** 지금 화면의 계정 주인. shown은 못 찾았을 때 사람에게 보여줄 이름이다. */
+    class AccountOwner(val service: String?, val shown: String)
+
+    /**
+     * 계정을 어느 앱 것으로 볼지 정한다. 반드시 메인 스레드에서 부른다.
+     *
+     * 앱이 제 화면에서 직접 로그인받으면 그 앱이다. 그런데 로그인을 웹으로 넘기는
+     * 앱이 많다 — 쿠팡은 크롬 커스텀탭으로 login.coupang.com을 연다. 눈앞의
+     * 패키지만 보면 com.android.chrome이라, 쿠팡 계정을 등록해둬도 찾지 못한다.
+     * 그래서 브라우저일 때는 주소창을 읽어 등록해둔 앱과 맞춰본다.
+     *
+     * 이 판단이 여기 있는 이유는 두 곳이 같은 답을 내야 하기 때문이다. 값을
+     * 꺼낼 때와 무엇이 등록돼 있는지 알려줄 때가 어긋나면, 쓸 수 없는 계정을
+     * 있다고 알려주거나 그 반대가 된다.
+     */
+    fun accountOwner(service: AgentAccessibilityService): AccountOwner {
+        service.browserHost()?.let { host ->
+            return AccountOwner(serviceForHost(service, host), host)
+        }
+        val appPackage = service.rootInActiveWindow?.packageName?.toString()
+        return AccountOwner(appPackage, appPackage ?: "알 수 없는 화면")
     }
 
     fun removeService(context: Context, service: String) {
