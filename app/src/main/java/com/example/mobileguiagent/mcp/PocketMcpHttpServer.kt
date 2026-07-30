@@ -5,6 +5,9 @@ import android.os.Handler
 import android.os.Looper
 import com.example.mobileguiagent.accessibility.AgentAccessibilityService
 import com.example.mobileguiagent.agent.FilledSecrets
+import com.example.mobileguiagent.agent.PrivacyReason
+import com.example.mobileguiagent.agent.PrivacyRoute
+import com.example.mobileguiagent.agent.ScreenPrivacyRouter
 import com.example.mobileguiagent.agent.SamePlace
 import com.example.mobileguiagent.agent.ScreenPrivacy
 import com.example.mobileguiagent.device.DeviceToolRegistry
@@ -1093,6 +1096,23 @@ class PocketMcpHttpServer(
                 .put("message", "$reason 이 앱은 사람이 직접 다뤄야 합니다.")
         }
 
+        // 화면 내용으로 한 겹 더 판정한다. blockedApp이 패키지 이름으로 거르는 것과
+        // 겹치지만 잡는 것이 다르다 — 쇼핑앱 안의 결제 폼은 패키지가 은행도 결제앱도
+        // 아니라 blockedApp을 그대로 통과한다. 카드번호·CVC 같은 라벨을 보고 여기서
+        // 잡아 사람에게 넘긴다.
+        val privacy = ScreenPrivacyRouter.route(snapshot)
+        if (privacy.route == PrivacyRoute.USER_HANDOFF) {
+            return JSONObject()
+                .put("success", false)
+                .put("error", "SENSITIVE_SCREEN")
+                .put("package_name", snapshot.packageName)
+                .put("reasons", JSONArray(privacy.reasons.map(PrivacyReason::name)))
+                .put(
+                    "message",
+                    "결제 자격증명을 다루는 화면입니다. 이 화면은 사람이 직접 다뤄야 합니다.",
+                )
+        }
+
         // 필터는 반환용 목록에만 적용. 저장 원본(lastSnapshot)과 snapshot_id(fingerprint)는
         // 그대로라 click_node 정합성 검사는 영향받지 않는다. node.id도 원래 값을 유지한다.
         val meaningful = snapshot.nodes.filter(::isMeaningfulNode)
@@ -1114,16 +1134,38 @@ class PocketMcpHttpServer(
                 ScreenPrivacy.redact(value, snapshot.packageName, nodeCount, isFieldHint = true),
             )
 
+        // 은행·보험처럼 화면에 뜬 것 자체가 개인정보인 앱. blockedApp이 대부분
+        // 걸러내지만 목록이 서로 달라서, 여기까지 온 것은 라벨을 통째로 가린다.
+        val hideEveryLabel = PrivacyReason.SENSITIVE_PACKAGE in privacy.reasons
+
         val shown = meaningful.take(maxNodes)
         // 라벨은 세 곳에 흩어져 있다. 빈 칸일 때는 hint만이 그 칸이 무엇인지
         // 알려주고, 값이 들어가면 text가 그 값이 된다. 셋 중 있는 것을 쓴다.
         // 부모를 따라가야 하므로 걸러내기 전의 전체 노드가 필요하다.
+        //
+        // 입력창은 다르게 다룬다. 거기 든 글자는 사람이 넣은 값이라, 형식이
+        // 뚜렷하지 않아도(아이디처럼) 나가면 안 된다. 실측: 인스타그램 로그인
+        // 화면에서 앱이 채워둔 아이디가 그대로 실려 나갔다 — FilledSecrets는
+        // 우리가 넣은 값만 알아보므로 그건 못 잡는다.
+        //
+        // 그래도 hint는 남긴다. hint는 앱이 그 칸에 붙인 라벨이지 사람이 넣은
+        // 값이 아니다. 이게 없으면 어느 칸이 무엇인지 알 수 없어 채우기 자체가
+        // 시작되지 않는다.
         val screen = ScreenLines.render(shown, snapshot.nodes) { node ->
-            listOfNotNull(
-                node.text?.let(::clean),
-                node.contentDescription?.let(::clean),
-                node.hint?.let { hint -> if (node.editable) cleanHint(hint) else clean(hint) },
-            ).firstOrNull { it.isNotBlank() }.orEmpty()
+            when {
+                hideEveryLabel -> HIDDEN_LABEL
+                node.editable -> node.hint?.let(::cleanHint)?.takeIf(String::isNotBlank)
+                    ?: if (node.text.isNullOrBlank() && node.contentDescription.isNullOrBlank()) {
+                        ""
+                    } else {
+                        HIDDEN_VALUE
+                    }
+                else -> listOfNotNull(
+                    node.text?.let(::clean),
+                    node.contentDescription?.let(::clean),
+                    node.hint?.let(::clean),
+                ).firstOrNull { it.isNotBlank() }.orEmpty()
+            }
         }
 
         return JSONObject()
@@ -1268,6 +1310,12 @@ class PocketMcpHttpServer(
     }
 
     companion object {
+        /** 사람이 넣은 값이 든 입력창. 무엇이 들어 있는지는 알려주지 않는다. */
+        private const val HIDDEN_VALUE = "<입력된 값>"
+
+        /** 화면 전체를 가려야 하는 앱. 구조만 남기고 글자는 내보내지 않는다. */
+        private const val HIDDEN_LABEL = "<가려짐>"
+
         private const val SERVER_NAME = "PocketMCP Android"
         private const val SERVER_VERSION = "0.1.0"
         private const val MCP_VERSION = "2025-11-25"
