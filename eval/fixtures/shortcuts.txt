@@ -1,8 +1,0 @@
-open에 쓸 수 있는 screen 값:
-settings(설정 첫 화면), wifi(와이파이, Wi-Fi 목록과 연결), bluetooth(블루투스), airplane(비행기 탑승 모드), connections(연결, 네트워크 전체), hotspot(모바일 핫스팟, 테더링, 인터넷 공유), data_usage(데이터 사용량, 통신), nfc(NFC, 엔에프씨), display(화면, 밝기, 글자 크기, 폰트, 다크 모드), sound(소리와 진동, 벨소리, 음량), notification(알림), battery(배터리와 절전), storage(저장공간, 용량), apps(앱, 어플, 애플리케이션 목록과 앱별 설정), location(위치), security(보안, 화면 잠금), privacy(개인정보 보호, 권한), accessibility(접근성), language(언어와 키보드), date(날짜와 시간), developer(개발자 옵션)
-
-task에 쓸 수 있는 값:
-dial(전화 앱에 번호 입력 (value=전화번호). 걸지는 않음), sms(문자 작성 화면 (value=전화번호, text=내용). 보내지는 않음), email(메일 작성 화면 (value=이메일 주소, text=내용). 보내지는 않음), web_search(웹 검색, 인터넷 찾기 (value=검색어)), open_url(브라우저, 인터넷으로 주소 열기 (value=URL)), map(지도, 길찾기로 장소 찾기 (value=장소 이름)), alarm(알람을 바로 등록하고 켠다 (value=HH:MM, text=알람 이름)), timer(타이머를 바로 시작한다 (value=분 단위 숫자)), show_alarms(알람 목록), torch(손전등, 플래시, 후레쉬를 바로 켜거나 끈다 (value=on 또는 off)), volume(미디어 음량을 바로 바꾼다 (value=0~100 퍼센트, 또는 up/down/mute)), battery(배터리 잔량과 충전 여부를 알려준다. 화면을 열지 않는다), camera(카메라, 사진 촬영), gallery(갤러리, 사진 보기), contacts(연락처, 주소록 목록), calendar(일정, 캘린더 추가 화면 (value=일정 제목))
-
-system에 쓸 수 있는 key 값:
-quick_settings(빠른 설정 패널을 내린다. 와이파이, 블루투스, 손전등, 비행기 모드, 화면 회전, 모바일 데이터, 무음 토글이 한 화면에 모여 있다. 켜고 끄는 것은 패널이 열린 뒤 tap으로 한다), home(홈 화면으로 나간다. 길을 잃었을 때 back을 반복하는 것보다 확실하다), notifications(알림창을 내린다. 받은 알림을 읽거나 누를 때), recents(최근 앱 목록. 방금까지 쓰던 앱으로 돌아갈 때), lock(화면을 잠근다. 이 뒤로는 에이전트가 아무것도 할 수 없다), power(전원 버튼을 길게 누른 화면(전원 끄기, 다시 시작)), close_shade(내려둔 알림창이나 빠른 설정 패널을 닫는다), all_apps(앱 서랍(설치된 앱 전체 목록)을 연다)

@@ -422,21 +422,6 @@ class PocketMcpHttpServer(
                 ),
         )
     }.also { result ->
-        // device_get_field는 여기 없다. 부를 수는 있지만 내주지는 않는다.
-        //
-        // 이 도구는 금고 값을 평문으로 돌려준다 — 지침이 "이름·전화번호·주소·
-        // 아이디·비밀번호를 직접 다루지 말라"고 막는 바로 그것이다. 규칙이 막는
-        // 것을 도구가 열어주면 규칙은 지켜지기를 바라는 말이 될 뿐이다.
-        //
-        // 그렇다고 dispatch에서 지울 수는 없다. eval/agent.py가 이걸 쓴다. 그쪽은
-        // 맥북의 파이썬이 칸 순서를 정하고, 로그에서 값을 지우고(scrub), 직접
-        // 타이핑까지 하는 구조라 값이 실제로 있어야 돈다. 브레인끼리(로컬 EXAONE
-        // 대 Gemini) 정확도를 견주는 실험 장치라 지금도 살아 있는 코드다.
-        //
-        // 그래서 목록에서만 뺀다. 이름을 아는 쪽(eval)은 그대로 부를 수 있고,
-        // 목록을 보고 도구를 고르는 쪽(MCP 클라이언트)에게는 아예 보이지 않아
-        // 손이 가지 않는다. 이름을 아는 호출자를 막지는 못하지만, 막으려는 것은
-        // 몰래 부르는 사람이 아니라 "규칙으로는 하지 말라면서 손에 쥐여주는" 상황이다.
         result.getJSONArray("tools").put(
             JSONObject()
                 .put("name", "device_type_node")
@@ -652,7 +637,6 @@ class PocketMcpHttpServer(
             "device_open_settings" -> openSettings()
             "device_click_node" -> clickNode(arguments)
             "device_fill_field" -> fillField(arguments)
-            "device_get_field" -> getField(arguments)
             "device_type_node" -> typeNode(arguments)
             "device_set_progress" -> setProgress(arguments)
             "device_set_checked" -> setChecked(arguments)
@@ -699,85 +683,6 @@ class PocketMcpHttpServer(
                 .put("after_package", after?.packageName ?: JSONObject.NULL)
                 .put("after_snapshot_id", after?.fingerprint?.hash ?: JSONObject.NULL),
         )
-    }
-
-    /**
-     * 금고 값을 꺼내 돌려준다.
-     *
-     * fill_field는 값을 밖으로 내보내지 않지만 이건 내보낸다. 흐름이 그렇게 정해져
-     * 있기 때문이다 — 클라우드 모델이 "이 화면엔 아이디·비밀번호가 필요하다"까지만
-     * 판단하고, 값을 꺼내 기기 안 모델에게 넘기는 건 code가 한다.
-     *
-     * 값이 나가는 만큼 조건은 그대로 지킨다. 계정 필드는 지금 화면에 떠 있는 앱
-     * 것만 준다. 부르는 쪽이 다른 앱 계정을 지목할 수 없다.
-     */
-    /**
-     * 금고 값을 부르는 쪽에 그대로 돌려준다.
-     *
-     * 이 도구는 맥북의 파이썬이 어느 칸에 무엇을 넣을지 정하던 시절의 것이다.
-     * 그때는 값이 폰을 나와 맥북을 거쳐 다시 들어와야 했다(FieldAssign 주석 참고).
-     * 지금은 그 판단이 앱 안으로 들어와 device_fill_secrets 하나로 끝나므로,
-     * 값을 밖으로 내보낼 이유가 없다. 남아 있는 사용처는 eval/agent.py뿐이다.
-     *
-     * 서버 지침은 "이름·전화번호·주소·아이디·비밀번호를 직접 입력하지 말고
-     * device_fill_secrets를 부르라"고 못박는데, 이 도구는 그 값을 그냥 건네준다.
-     * 지침이 막는 것을 도구가 열어주고 있는 셈이라 없애는 것이 맞다.
-     */
-    private fun getField(arguments: JSONObject): JSONObject {
-        val field = arguments.optString("field")
-        if (!SecretVault.FIELDS.containsKey(field)) {
-            return toolError(
-                "UNKNOWN_FIELD",
-                "모르는 필드입니다: $field. 가능한 값: ${SecretVault.FIELDS.keys.joinToString()}",
-            )
-        }
-        val service = AgentAccessibilityService.activeService
-            ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
-
-        // 은행·결제·인증 앱에서는 값을 내주지 않는다. device_observe와
-        // device_screenshot이 막는 화면인데 여기로는 값이 나가면 문이 헛것이 된다.
-        service.rootInActiveWindow?.packageName?.toString()?.let { packageName ->
-            ScreenPrivacy.blockedApp(packageName)?.let { reason ->
-                return toolError("SENSITIVE_APP", "$reason 이 앱은 사람이 직접 다뤄야 합니다.")
-            }
-        }
-
-        val value = AtomicReference<CharArray?>(null)
-        val app = AtomicReference<String?>(null)
-        val latch = CountDownLatch(1)
-        Handler(Looper.getMainLooper()).post {
-            val owner = SecretVault.accountOwner(service)
-            app.set(owner.shown)
-            value.set(
-                when {
-                    !SecretVault.isAccountField(field) -> SecretVault.reveal(service, field)
-                    owner.service == null -> null
-                    else -> SecretVault.reveal(service, field, owner.service)
-                },
-            )
-            latch.countDown()
-        }
-        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-
-        val found = value.get()
-            ?: return toolError(
-                "FIELD_NOT_SET",
-                if (SecretVault.isAccountField(field)) {
-                    "이 앱(${app.get()})의 $field 이(가) 등록돼 있지 않습니다."
-                } else {
-                    "$field 값이 저장돼 있지 않습니다."
-                },
-            )
-        // 이 도구만은 값을 밖으로 내보낸다(위 주석 참고). JSON에 실으려면 String이
-        // 되어야 하므로 여기서 CharArray의 이점이 끊긴다 — 도구 자체를 없애는 것이
-        // 맞다는 판단은 그대로다.
-        return try {
-            toolResult(
-                JSONObject().put("success", true).put("field", field).put("value", String(found)),
-            )
-        } finally {
-            SecretVault.wipe(found)
-        }
     }
 
     /** 스냅샷에서 고른 입력창에 글자를 넣는다. 포커스에 기대지 않는다. */

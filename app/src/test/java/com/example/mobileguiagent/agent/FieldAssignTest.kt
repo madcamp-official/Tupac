@@ -7,9 +7,9 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * FieldAssign이 파이썬(eval/assign.py)과 같은 판단을 하는지 본다.
+ * FieldAssign이 어느 칸에 어느 필드를 배정하는지 본다.
  *
- * 케이스는 eval/cases.py에서 옮겼다. 대부분 "예전에 이렇게 틀렸다"의 기록이라,
+ * 케이스는 이 판단이 파이썬이던 시절의 회귀 목록에서 옮겼다. 대부분 "예전에 이렇게 틀렸다"의 기록이라,
  * 각 단언에 그 사연을 붙였다 — 깨졌을 때 무엇을 되돌린 것인지 알 수 있게.
  *
  * 화면은 실기기에서 본 특징만 그대로 옮겨 담은 것이다. 카카오톡 아이디 칸의

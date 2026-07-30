@@ -7,9 +7,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * ScreenPrivacy가 파이썬(eval/privacy.py)과 같은 판단을 하는지 본다.
+ * ScreenPrivacy가 화면에서 무엇을 가리고 무엇을 남기는지 본다.
  *
- * 케이스는 eval/cases.py에서 옮겼다. 여기 있는 것은 대부분 한 번씩 새어나갔거나
+ * 케이스는 이 판단이 파이썬이던 시절의 회귀 목록에서 옮겼다. 여기 있는 것은 대부분 한 번씩 새어나갔거나
  * 반대로 너무 많이 가려서 막혔던 기록이다. 단언마다 그 사연을 붙였다.
  *
  * 이 검사가 특히 중요해진 이유는 Claude가 MCP로 직접 붙기 때문이다. 예전에는

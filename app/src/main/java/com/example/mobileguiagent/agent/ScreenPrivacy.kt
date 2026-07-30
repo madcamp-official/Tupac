@@ -3,10 +3,10 @@ package com.example.mobileguiagent.agent
 import com.example.mobileguiagent.model.UiNode
 
 /**
- * 화면을 밖으로 내보내기 전에 개인정보를 거른다. eval/privacy.py를 옮긴 것이다.
+ * 화면을 밖으로 내보내기 전에 개인정보를 거른다.
  *
  * 왜 앱 안에 있어야 하는가:
- *   지금까지 이 문지기는 맥북의 파이썬이었다. 클라우드 모델을 부르기 직전에 화면
+ *   한동안 이 문지기는 맥북의 파이썬이었다. 클라우드 모델을 부르기 직전에 화면
  *   글을 다듬었다. 그런데 Claude가 MCP로 직접 붙으면 device_observe의 응답이
  *   그대로 대화창으로 간다 — 그 사이에 파이썬이 없다. 문지기를 앱으로 옮기지
  *   않으면, 개인정보를 지키려고 만든 구조가 정반대가 된다.
