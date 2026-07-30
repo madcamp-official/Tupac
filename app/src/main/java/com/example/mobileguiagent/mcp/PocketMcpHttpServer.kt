@@ -1,9 +1,11 @@
 package com.example.mobileguiagent.mcp
 
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import com.example.mobileguiagent.accessibility.AgentAccessibilityService
 import com.example.mobileguiagent.agent.FilledSecrets
+import com.example.mobileguiagent.agent.SamePlace
 import com.example.mobileguiagent.agent.ScreenPrivacy
 import com.example.mobileguiagent.device.DeviceToolRegistry
 import com.example.mobileguiagent.model.NodeActionResult
@@ -836,11 +838,44 @@ class PocketMcpHttpServer(
     }
 
     /** 관찰할 때 본 그 항목이 지금도 같은 자리에 같은 내용으로 있는지. */
+    /** 두 자리가 같은 항목으로 볼 만큼 겹치는지. 계산은 SamePlace가 한다. */
+    private fun sameSpot(a: Rect, b: Rect): Boolean = SamePlace.enough(
+        a.left, a.top, a.right, a.bottom,
+        b.left, b.top, b.right, b.bottom,
+    )
+
+    /**
+     * 관찰할 때 본 그 항목이 지금도 화면에 있는지.
+     *
+     * 번호로 찾지 않는다. node id는 순회 순서라("node_${'$'}{output.size}") 트리
+     * 앞쪽에 노드가 하나 생기거나 사라지면 뒤 번호가 전부 밀린다. 그러면 같은
+     * 번호가 다른 요소를 가리켜, 누르려던 항목이 제자리에 그대로 있는데도
+     * "사라졌다"고 판정한다. 실측: 로그인 직후 모달 뒤에서 피드가 로딩되는 동안
+     * "확인" 클릭이 거부됐고, 화면을 다시 읽어보니 지문까지 같았다.
+     *
+     * 그래서 클릭이 쓰는 것과 같은 기준으로 찾는다 — 라벨이 같고 자리가 겹치는
+     * 노드. clickSnapshotNode도 라벨로 후보를 고르고 번호는 가점으로만 쓴다.
+     * 관문이 클릭보다 엄격하면, 클릭이 충분히 감당하는 화면에서도 클릭까지
+     * 가지 못한다.
+     *
+     * 자리는 완전 일치를 요구하지 않는다(SamePlace). 1px 흔들림은 화면이 넘어간
+     * 것이 아니고, 한 줄 스크롤은 겹침이 0이라 그대로 걸러진다.
+     */
     private fun isStillThere(target: UiNode, current: UiSnapshot): Boolean {
-        val now = current.nodes.firstOrNull { node -> node.id == target.id } ?: return false
-        return now.text == target.text &&
-            now.contentDescription == target.contentDescription &&
-            now.bounds == target.bounds
+        val label = target.text ?: target.contentDescription
+        return current.nodes.any { node ->
+            if (!sameSpot(node.bounds, target.bounds)) {
+                false
+            } else if (label.isNullOrBlank()) {
+                // 라벨이 없는 노드는 클릭도 좌표로 누른다(이중 전략). 그 자리에
+                // 여전히 라벨 없는 노드가 있는지만 본다 — 빈 자리에 글자가 생겼다면
+                // 화면이 달라진 것이다.
+                (node.text ?: node.contentDescription).isNullOrBlank()
+            } else {
+                node.text == target.text &&
+                    node.contentDescription == target.contentDescription
+            }
+        }
     }
 
     private fun clickNode(arguments: JSONObject): JSONObject {
@@ -867,11 +902,22 @@ class PocketMcpHttpServer(
         //
         // 이 검사가 막으려던 건 "관찰한 뒤 화면이 넘어가서 엉뚱한 걸 누르는 것"인데,
         // 그건 누를 항목의 위치와 내용이 그대로인지만 봐도 알 수 있다.
-        if (current.packageName != observed.packageName || !isStillThere(target, current)) {
+        // 둘을 갈라 알린다. 한 줄로 뭉쳐두면 응답만 보고는 앱이 넘어간 것인지
+        // 항목을 못 찾은 것인지 알 수 없어, 무엇을 다시 해야 하는지도 모른다.
+        if (current.packageName != observed.packageName) {
             lastSnapshot.set(current)
             return toolError(
                 "SCREEN_CHANGED",
-                "누르려던 항목이 사라지거나 자리를 옮겨 클릭을 거부했습니다.",
+                "다른 앱으로 넘어가 클릭을 거부했습니다 " +
+                    "(${observed.packageName} → ${current.packageName}).",
+            )
+        }
+        if (!isStillThere(target, current)) {
+            lastSnapshot.set(current)
+            return toolError(
+                "SCREEN_CHANGED",
+                "누르려던 항목을 지금 화면에서 찾지 못해 거부했습니다. " +
+                    "device_observe로 화면을 다시 읽고 고르세요.",
             )
         }
 
