@@ -7,10 +7,16 @@
 # 처음 한 번은 USB 케이블이 필요하다(adb tcpip를 걸어야 하므로). 그 뒤로는
 # 폰을 재부팅하기 전까지 케이블 없이 된다.
 #
-# 이 스크립트는 토큰을 다루지 않는다. 연결이 끝나면 아래를 실행하고 agent를 돌린다.
+# 끝나면 폰의 MCP 서버가 127.0.0.1:9911에 열린다. 릴레이도 터널도 없이 그리로
+# 곧장 부를 수 있어서, 개발 중에는 이쪽이 빠르다.
+#
+# 이 스크립트는 토큰을 다루지 않는다. 폰의 페어링 토큰이 필요하면 이렇게 꺼낸다.
 #   export TOKEN=$(adb shell run-as com.example.mobileguiagent \
 #       cat /data/data/com.example.mobileguiagent/shared_prefs/pocket_mcp_auth.xml \
 #       | sed -n 's/.*name="bearer_token">\([^<]*\)<.*/\1/p')
+#   curl -s -X POST http://127.0.0.1:9911/mcp -H "Authorization: Bearer $TOKEN" \
+#       -H 'Content-Type: application/json' \
+#       -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 set -e
 
 ADB_PORT=5555
