@@ -1,7 +1,5 @@
 package com.example.mobileguiagent.credentials
 
-import org.json.JSONObject
-
 enum class CredentialFieldRole {
     USERNAME,
     PASSWORD,
@@ -16,13 +14,7 @@ data class PublicCredentialDescriptor(
     val id: String,
     val scopeAlias: String,
     val role: CredentialFieldRole,
-) {
-    fun toPlannerJson(): JSONObject = JSONObject()
-        .put("id", id)
-        .put("scope", scopeAlias)
-        .put("type", "credential_reference")
-        .put("field_role", role.name.lowercase())
-}
+)
 
 /**
  * Complete local policy record. This object never leaves the Android process.

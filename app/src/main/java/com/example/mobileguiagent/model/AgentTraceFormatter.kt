@@ -1,5 +1,7 @@
 package com.example.mobileguiagent.model
 
+import com.example.mobileguiagent.agent.AgentDataSanitizer
+import com.example.mobileguiagent.device.DeviceToolCall
 import com.example.mobileguiagent.device.DeviceToolResult
 
 /**
@@ -8,18 +10,22 @@ import com.example.mobileguiagent.device.DeviceToolResult
  * for state transitions rather than presentation wording.
  */
 internal object AgentTraceFormatter {
-    fun format(result: DeviceToolResult): String = when (result) {
+    fun format(
+        call: DeviceToolCall,
+        result: DeviceToolResult,
+    ): String = when (result) {
         is DeviceToolResult.Action ->
-            "${if (result.success) "성공" else "실패"} · ${result.message}"
+            "${if (result.success) "성공" else "실패"} · " +
+                AgentDataSanitizer.toolResultMessage(call, result.message)
 
         is DeviceToolResult.Error ->
-            "오류 ${result.code} · ${result.message}"
+            "오류 ${result.code} · ${AgentDataSanitizer.text(result.message)}"
 
         is DeviceToolResult.Screenshot ->
             "스크린샷 ${result.width}×${result.height}"
 
         is DeviceToolResult.Success ->
-            result.message ?: "성공"
+            AgentDataSanitizer.toolResultMessage(call, result.message) ?: "성공"
 
         is DeviceToolResult.UiObservation ->
             "${result.snapshot.packageName} · 노드 ${result.snapshot.nodes.size}개"

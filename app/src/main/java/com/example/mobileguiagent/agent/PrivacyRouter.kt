@@ -11,7 +11,7 @@ import com.example.mobileguiagent.model.UiSnapshot
  */
 enum class PrivacyRoute {
     CLOUD_OK,
-    LOCAL_ONLY,
+    CLOUD_REDACTED,
     USER_HANDOFF,
 }
 
@@ -40,7 +40,9 @@ object ScreenPrivacyRouter {
         // A launcher is a catalog of installed app names. Labels such as
         // "OTP", a bank name, or a payment app do not mean the current screen
         // contains credentials. Structural password fields remain protected.
-        val catalogSurface = LAUNCHER_PACKAGE_MARKERS.any(packageName::contains)
+        val catalogSurface =
+            LAUNCHER_PACKAGE_MARKERS.any(packageName::contains) ||
+                CONTROLLER_PACKAGE_MARKERS.any(packageName::contains)
         val checkoutContext = screenLabels.values.any { label ->
             CHECKOUT_CONTEXT_TERMS.any(label::contains)
         }
@@ -79,15 +81,14 @@ object ScreenPrivacyRouter {
             reasons += PrivacyReason.SENSITIVE_PACKAGE
         }
 
-        // Authentication screens can still contain reversible navigation such
-        // as "비회원 로그인". Keep password/auth text entirely on-device and
-        // let the restricted local planner choose only a safe navigation node.
+        // Authentication and delivery screens may be planned in the cloud only
+        // after editable and sensitive node text has been redacted on-device.
         // Payment credentials remain an unconditional user handoff.
         val handoff = PrivacyReason.PAYMENT_CREDENTIALS in reasons
         return PrivacyDecision(
             route = when {
                 handoff -> PrivacyRoute.USER_HANDOFF
-                reasons.isNotEmpty() -> PrivacyRoute.LOCAL_ONLY
+                reasons.isNotEmpty() -> PrivacyRoute.CLOUD_REDACTED
                 else -> PrivacyRoute.CLOUD_OK
             },
             reasons = reasons,
@@ -96,7 +97,7 @@ object ScreenPrivacyRouter {
     }
 
     private fun UiNode.label(): String =
-        listOfNotNull(text, contentDescription, viewId).joinToString(" ")
+        listOfNotNull(text, contentDescription, hint, viewId).joinToString(" ")
 
     private fun containsAuthenticationTerm(label: String): Boolean =
         AUTHENTICATION_PHRASES.any(label::contains) ||
@@ -149,6 +150,13 @@ object ScreenPrivacyRouter {
         "launcher",
         "quickstep",
     )
+    // The controller renders the user's goal and prior action summaries. Words
+    // such as "로그인" or "카드번호" there describe the requested task; they
+    // are not evidence that the current target app exposes an auth/payment
+    // screen. Structural password fields remain protected by the first rule.
+    private val CONTROLLER_PACKAGE_MARKERS = listOf(
+        "com.example.mobileguiagent",
+    )
     private val PHONE_PATTERN =
         Regex("""(?<!\d)01[016789][-\s]?\d{3,4}[-\s]?\d{4}(?!\d)""")
     private val ADDRESS_PATTERN =
@@ -156,20 +164,20 @@ object ScreenPrivacyRouter {
 }
 
 /**
- * Local planning may navigate away from a private login screen, but it must
- * never submit an authentication action. Guest-mode tabs are navigation, not
- * authentication, and are deliberately allowed.
+ * Remote automation may navigate away from a sensitive login screen, but it
+ * may submit a structurally verified login only when package-bound credentials
+ * exist locally. Other sensitive actions remain blocked.
  */
-object PrivateScreenActionPolicy {
-    fun blockedLocalTapReason(
+object SensitiveScreenActionPolicy {
+    fun blockedTapReason(
         node: UiNode?,
         goal: String = "",
     ): String? {
         val label = listOfNotNull(
             node?.text,
             node?.contentDescription,
-            node?.viewId,
         ).joinToString(" ").lowercase().trim()
+        val viewId = node?.viewId.orEmpty().lowercase()
         if ("비회원 로그인" in label || "guest login" in label) return null
         if (
             goal.isNewBookingGoal() &&
@@ -182,7 +190,9 @@ object PrivateScreenActionPolicy {
             "간편로그인" in label ||
             "로 로그인" in label ||
             "본인인증" in label ||
-            "인증하기" in label
+            "인증하기" in label ||
+            viewId.endsWith("loginbtn") ||
+            viewId.endsWith("login_button")
         ) {
             "로그인 또는 본인인증 실행은 사용자가 직접 확인해야 합니다."
         } else {
@@ -216,40 +226,5 @@ object PrivateScreenActionPolicy {
         "reservation lookup",
         "order history",
     )
-}
 
-/**
- * Hard execution boundary independent of model prompts. Shopping exploration
- * and entering a checkout page are reversible; final order/payment actions are
- * never executed by either cloud or local planners in this PoC.
- */
-object ShoppingActionPolicy {
-    fun blockedTapReason(node: UiNode?): String? {
-        val label = listOfNotNull(
-            node?.text,
-            node?.contentDescription,
-            node?.viewId,
-        ).joinToString(" ").lowercase()
-        return blockedLabelReason(label)
-    }
-
-    fun blockedLabelReason(label: String): String? {
-        val normalized = label.lowercase()
-        return if (IRREVERSIBLE_TERMS.any(normalized::contains)) {
-            "주문 확정 또는 결제 행동은 사용자가 직접 확인해야 합니다."
-        } else {
-            null
-        }
-    }
-
-    private val IRREVERSIBLE_TERMS = listOf(
-        "결제하기",
-        "결제 및 주문",
-        "주문 및 결제",
-        "주문 완료",
-        "구매 확정",
-        "구매확정",
-        "place order",
-        "pay now",
-    )
 }

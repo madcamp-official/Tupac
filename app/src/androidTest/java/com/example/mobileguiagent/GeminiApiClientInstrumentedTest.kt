@@ -9,6 +9,8 @@ import com.example.mobileguiagent.cloud.ScreenElementSource
 import com.example.mobileguiagent.device.DeviceToolResult
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiSnapshot
+import com.example.mobileguiagent.model.AgentSkill
+import com.example.mobileguiagent.model.AgentSkillBundle
 import com.example.mobileguiagent.ocr.OcrScreenObservation
 import com.example.mobileguiagent.ocr.OcrTextLine
 import org.json.JSONArray
@@ -137,6 +139,40 @@ class GeminiApiClientInstrumentedTest {
         assertEquals(1, parts.length())
         assertFalse(body.toString().contains("inlineData"))
         assertTrue(parts.getJSONObject(0).getString("text").contains("request_visual"))
+    }
+
+    @Test
+    fun plannerReceivesSharedSkillsAndRegisteredAppLaunchAction() {
+        val request = GeminiPlannerRequest(
+            goal = "메가박스 열어",
+            step = 1,
+            maxSteps = 24,
+            screenWidth = 1_080,
+            screenHeight = 2_340,
+            observation = UiSnapshot(
+                packageName = "com.sec.android.app.launcher",
+                nodes = emptyList(),
+            ),
+            recentActions = emptyList(),
+            skills = AgentSkillBundle(
+                taskSkills = listOf(
+                    AgentSkill("book-megabox-movie", "MEGABOX_TASK_RULE"),
+                ),
+                navigationSkill = AgentSkill(
+                    "gui-app-navigation",
+                    "USE_REGISTERED_LAUNCH_APP",
+                ),
+            ),
+        )
+
+        val body = client.buildRequestBody(request).toString()
+
+        assertTrue(body.contains("book-megabox-movie"))
+        assertTrue(body.contains("MEGABOX_TASK_RULE"))
+        assertTrue(body.contains("gui-app-navigation"))
+        assertTrue(body.contains("USE_REGISTERED_LAUNCH_APP"))
+        assertTrue(body.contains("launch_app"))
+        assertTrue(body.contains("app_name"))
     }
 
     @Test

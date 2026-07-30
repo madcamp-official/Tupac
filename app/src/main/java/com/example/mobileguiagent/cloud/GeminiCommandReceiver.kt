@@ -18,10 +18,9 @@ class GeminiCommandReceiver : BroadcastReceiver() {
         val goal = intent.getStringExtra(EXTRA_GOAL)?.trim().orEmpty()
         if (goal.isEmpty()) return
         Log.i(TAG, "Background Gemini goal received")
-        LocalChatRepository.sendWithGemini(
+        LocalChatRepository.send(
             context = context.applicationContext,
             input = goal,
-            controllerVisible = false,
         )
     }
 

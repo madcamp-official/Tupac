@@ -1,0 +1,74 @@
+{
+  "activation_entities": {
+    "app": [
+      "메가박스",
+      "megabox"
+    ]
+  },
+  "capabilities": [
+    "USE_STORED_CREDENTIALS",
+    "ACKNOWLEDGE_INFORMATION",
+    "ENFORCE_EXACT_SELECTIONS"
+  ],
+  "preferred_view_ids": [
+    "com.megabox.mop:id/booking"
+  ],
+  "forbidden_view_ids": [
+    "com.megabox.mop:id/ticket"
+  ],
+  "entity_navigation_hints": {
+    "theater": {
+      "대전": [
+        "지역별",
+        "대전/충청/세종"
+      ],
+      "울산": [
+        "지역별",
+        "부산/대구/경상"
+      ]
+    }
+  },
+  "state_slot_view_ids": {
+    "theater": [
+      "prevTheaterNm"
+    ],
+    "entity_selection_complete": [
+      "choiceBtn"
+    ],
+    "movie": [
+      "prevMovieNm",
+      "newMovieNm"
+    ],
+    "time": [
+      "prevDate",
+      "com.megabox.mop:id/headerTitle"
+    ],
+    "adult_count": [
+      "TKA"
+    ],
+    "adult_increment": [
+      "TKA_plus"
+    ],
+    "adult_decrement": [
+      "TKA_minus"
+    ],
+    "seat_selection_continue": [
+      "nextSelBtn"
+    ],
+    "seat_price": [
+      "ticketPriceInfo"
+    ]
+  },
+  "date_view_id_patterns": [
+    "^playDate_(\\d{8})$"
+  ],
+  "showtime_view_id_patterns": [
+    "^time_.*_(\\d{4})\\d{4}$"
+  ],
+  "seat_candidate_patterns": [
+    "^(?<row>[A-Z]+)\\s*(?<number>\\d+)\\b.*(?:판매\\s*가능.*일반|available.*general).*$"
+  ],
+  "completion_labels": [
+    "결제하기"
+  ]
+}

@@ -4,9 +4,9 @@ import android.graphics.Rect
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.mobileguiagent.agent.PrivacyReason
 import com.example.mobileguiagent.agent.PrivacyRoute
-import com.example.mobileguiagent.agent.PrivateScreenActionPolicy
+import com.example.mobileguiagent.agent.SensitiveScreenActionPolicy
 import com.example.mobileguiagent.agent.ScreenPrivacyRouter
-import com.example.mobileguiagent.agent.ShoppingActionPolicy
+import com.example.mobileguiagent.model.AgentActionBoundaryPolicy
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiSnapshot
 import org.junit.Assert.assertEquals
@@ -18,7 +18,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class PrivacyRouterInstrumentedTest {
     @Test
-    fun authenticationLabelRoutesToLocalPlannerWithoutImmediateHandoff() {
+    fun authenticationLabelRoutesToRedactedCloudWithoutImmediateHandoff() {
         val decision = ScreenPrivacyRouter.route(
             snapshot(
                 node(
@@ -34,7 +34,7 @@ class PrivacyRouterInstrumentedTest {
             ),
         )
 
-        assertEquals(PrivacyRoute.LOCAL_ONLY, decision.route)
+        assertEquals(PrivacyRoute.CLOUD_REDACTED, decision.route)
         assertEquals(true, PrivacyReason.AUTHENTICATION_SCREEN in decision.reasons)
     }
 
@@ -64,43 +64,77 @@ class PrivacyRouterInstrumentedTest {
     }
 
     @Test
-    fun checkoutDeliveryScreenRoutesToLocalModel() {
+    fun controllerGoalTextDoesNotMasqueradeAsTargetAuthenticationScreen() {
         val decision = ScreenPrivacyRouter.route(
-            snapshot(node("주문/결제"), node("배송지"), node("받는 분")),
+            snapshot(
+                node("메가박스 앱을 열고 저장된 계정으로 로그인해", editable = true),
+            ).copy(packageName = "com.example.mobileguiagent"),
         )
-        assertEquals(PrivacyRoute.LOCAL_ONLY, decision.route)
-        assertEquals(true, PrivacyReason.DELIVERY_DETAILS in decision.reasons)
+
+        assertEquals(PrivacyRoute.CLOUD_OK, decision.route)
     }
 
     @Test
-    fun passwordScreenStaysOnDeviceForRestrictedNavigation() {
+    fun controllerPasswordFieldUsesRedactedCloudRoute() {
         val decision = ScreenPrivacyRouter.route(
-            snapshot(node("비밀번호", password = true)),
+            snapshot(node("비밀번호", password = true))
+                .copy(packageName = "com.example.mobileguiagent"),
         )
-        assertEquals(PrivacyRoute.LOCAL_ONLY, decision.route)
+
+        assertEquals(PrivacyRoute.CLOUD_REDACTED, decision.route)
         assertEquals(true, PrivacyReason.PASSWORD_FIELD in decision.reasons)
     }
 
     @Test
-    fun localAuthenticationPolicyAllowsGuestTabButBlocksLoginSubmission() {
+    fun checkoutDeliveryScreenRoutesToRedactedCloud() {
+        val decision = ScreenPrivacyRouter.route(
+            snapshot(node("주문/결제"), node("배송지"), node("받는 분")),
+        )
+        assertEquals(PrivacyRoute.CLOUD_REDACTED, decision.route)
+        assertEquals(true, PrivacyReason.DELIVERY_DETAILS in decision.reasons)
+    }
+
+    @Test
+    fun passwordScreenUsesRedactedCloudPlanning() {
+        val decision = ScreenPrivacyRouter.route(
+            snapshot(node("비밀번호", password = true)),
+        )
+        assertEquals(PrivacyRoute.CLOUD_REDACTED, decision.route)
+        assertEquals(true, PrivacyReason.PASSWORD_FIELD in decision.reasons)
+    }
+
+    @Test
+    fun sensitiveHintWithoutTextIsStillKeptOnDevice() {
+        val sensitive = node("", id = "card_field").copy(
+            hint = "카드번호",
+            editable = true,
+        )
+        val decision = ScreenPrivacyRouter.route(snapshot(sensitive))
+
+        assertEquals(PrivacyRoute.USER_HANDOFF, decision.route)
+        assertEquals(true, PrivacyReason.PAYMENT_CREDENTIALS in decision.reasons)
+    }
+
+    @Test
+    fun sensitiveAuthenticationPolicyAllowsGuestTabButBlocksLoginSubmission() {
         assertNull(
-            PrivateScreenActionPolicy.blockedLocalTapReason(
+            SensitiveScreenActionPolicy.blockedTapReason(
                 node("비회원 로그인", clickable = true),
             ),
         )
         assertNotNull(
-            PrivateScreenActionPolicy.blockedLocalTapReason(
+            SensitiveScreenActionPolicy.blockedTapReason(
                 node("로그인", clickable = true),
             ),
         )
         assertNotNull(
-            PrivateScreenActionPolicy.blockedLocalTapReason(
+            SensitiveScreenActionPolicy.blockedTapReason(
                 node = node("비회원 예매확인", clickable = true),
                 goal = "오디세이를 비회원으로 예매해줘",
             ),
         )
         assertNull(
-            PrivateScreenActionPolicy.blockedLocalTapReason(
+            SensitiveScreenActionPolicy.blockedTapReason(
                 node = node("비회원 예매확인", clickable = true),
                 goal = "비회원 예매확인 화면을 열어줘",
             ),
@@ -109,8 +143,8 @@ class PrivacyRouterInstrumentedTest {
 
     @Test
     fun finalPaymentIsBlockedButEnteringCheckoutIsAllowed() {
-        assertNull(ShoppingActionPolicy.blockedTapReason(node("구매하기")))
-        assertNotNull(ShoppingActionPolicy.blockedTapReason(node("결제하기")))
+        assertNull(AgentActionBoundaryPolicy.blockedTapReason(node("구매하기")))
+        assertNotNull(AgentActionBoundaryPolicy.blockedTapReason(node("결제하기")))
     }
 
     private fun snapshot(vararg nodes: UiNode) = UiSnapshot(

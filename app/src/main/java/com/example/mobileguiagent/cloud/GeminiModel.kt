@@ -4,9 +4,9 @@ enum class GeminiModel(
     val apiId: String,
     val displayName: String,
 ) {
-    LATEST_LITE(
-        apiId = "gemini-3.5-flash-lite",
-        displayName = "Gemini 3.5 Flash-Lite",
+    FLASH_LITE_3_1(
+        apiId = "gemini-3.1-flash-lite",
+        displayName = "Gemini 3.1 Flash-Lite",
     ),
     SMART(
         apiId = "gemini-3.6-flash",

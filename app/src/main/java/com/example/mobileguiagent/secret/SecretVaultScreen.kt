@@ -149,6 +149,22 @@ fun SecretVaultScreen(onBack: () -> Unit) {
                         onDelete = null,
                     )
                 }
+                item {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                "로그인 자동 입력",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                            Text(
+                                "저장된 아이디·비밀번호는 이 앱의 로그인 화면이 확인되면 " +
+                                    "별도 승인 없이 자동 입력됩니다. 값은 폰 밖으로 나가지 않습니다.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
 
             if (services.isNotEmpty()) {

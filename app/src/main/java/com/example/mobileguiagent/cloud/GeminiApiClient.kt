@@ -1,12 +1,15 @@
 package com.example.mobileguiagent.cloud
 
 import android.util.Base64
-import android.os.SystemClock
 import com.example.mobileguiagent.device.DeviceToolResult
-import com.example.mobileguiagent.credentials.PublicCredentialDescriptor
+import com.example.mobileguiagent.model.AgentGoalSpec
+import com.example.mobileguiagent.model.AgentGoalSpecJson
+import com.example.mobileguiagent.model.AgentSkillBundle
+import com.example.mobileguiagent.model.TaskContract
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiSnapshot
 import com.example.mobileguiagent.model.isMeaningfulForAgent
+import com.example.mobileguiagent.agent.AgentWorkspace
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -18,15 +21,26 @@ import kotlin.coroutines.coroutineContext
 
 data class GeminiPlannerAction(
     val action: String,
+    /** Short auditable rationale, not hidden chain-of-thought. */
+    val reasonCode: String = "UNSPECIFIED",
+    val target: String = "UNSPECIFIED",
+    val expectedChange: String = "UNSPECIFIED",
     val x: Double? = null,
     val y: Double? = null,
     val endX: Double? = null,
     val endY: Double? = null,
     val nodeId: String? = null,
+    val option: String? = null,
+    val direction: String? = null,
     val elementId: String? = null,
     val text: String? = null,
+    val appName: String? = null,
+    val query: String? = null,
     val durationMs: Long? = null,
     val message: String? = null,
+    /** Auditable, concise plan—not private chain-of-thought. */
+    val plan: List<String> = emptyList(),
+    val progressSummary: String = "No durable progress reported",
 )
 
 data class GeminiPlannerRequest(
@@ -44,80 +58,70 @@ data class GeminiPlannerRequest(
     /** Null for the cheap UI-tree-first pass; attached only on explicit visual request. */
     val screenshot: DeviceToolResult.Screenshot? = null,
     val recentActions: List<String>,
+    val skills: AgentSkillBundle = AgentSkillBundle.EMPTY,
+    val taskContract: TaskContract? = null,
+    val workspace: AgentWorkspace? = null,
+    /** Package that hosts the agent UI itself, not the user's target app. */
+    val agentHostPackage: String? = null,
 )
 
 data class GeminiMeasuredDecision(
     val action: GeminiPlannerAction,
-    val latencyMs: Long,
     val requestBytes: Int,
     val promptTokenCount: Int?,
     val candidatesTokenCount: Int?,
     val totalTokenCount: Int?,
 )
 
-class GeminiApiClient {
-    /**
-     * Cloud preflight that chooses opaque references only. The returned IDs
-     * are intersected with the exact offered allowlist before local use.
-     */
-    suspend fun selectCredentialResources(
+class GeminiApiClient : AgentPlanner, AgentGoalInterpreter {
+    override suspend fun decide(
         apiKey: String,
         model: GeminiModel,
-        goal: String,
-        resources: List<PublicCredentialDescriptor>,
-    ): Set<String> = withContext(Dispatchers.IO) {
-        if (resources.isEmpty()) return@withContext emptySet()
-        require(apiKey.isNotBlank())
-        val offeredIds = resources.map(PublicCredentialDescriptor::id).toSet()
-        val connection = (
-            URL("$API_BASE/models/${model.apiId}:generateContent")
-                .openConnection() as HttpURLConnection
-            ).apply {
-            requestMethod = "POST"
-            connectTimeout = CONNECT_TIMEOUT_MS
-            readTimeout = READ_TIMEOUT_MS
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            setRequestProperty("x-goog-api-key", apiKey)
-        }
-        try {
-            val body = buildCredentialSelectionRequest(
-                goal = goal,
-                resources = resources,
-            )
-            connection.outputStream.use { output ->
-                output.write(body.toString().toByteArray(Charsets.UTF_8))
-            }
-            coroutineContext.ensureActive()
-            val status = connection.responseCode
-            val responseText = (
-                if (status in 200..299) connection.inputStream else connection.errorStream
-                )?.bufferedReader()?.use { it.readText() }.orEmpty()
-            if (status !in 200..299) {
-                error("Gemini credential selector HTTP $status")
-            }
-            parseCredentialSelection(responseText)
-                .filterTo(linkedSetOf()) { it in offeredIds }
-        } finally {
-            connection.disconnect()
-        }
+        request: GeminiPlannerRequest,
+    ): GeminiMeasuredDecision {
+        val measured = executeJson(
+            apiKey = apiKey,
+            model = model,
+            requestBody = buildRequestBody(request),
+        )
+        return GeminiMeasuredDecision(
+            action = parseResponse(measured.responseText),
+            requestBytes = measured.requestBytes,
+            promptTokenCount = measured.promptTokenCount,
+            candidatesTokenCount = measured.candidatesTokenCount,
+            totalTokenCount = measured.totalTokenCount,
+        )
     }
 
-    suspend fun decide(
+    override suspend fun interpret(
         apiKey: String,
         model: GeminiModel,
-        request: GeminiPlannerRequest,
-    ): GeminiPlannerAction = decideMeasured(apiKey, model, request).action
+        request: AgentGoalInterpretationRequest,
+    ): AgentMeasuredGoalSpec {
+        val startedAt = System.nanoTime()
+        val measured = executeJson(
+            apiKey = apiKey,
+            model = model,
+            requestBody = buildGoalInterpretationRequestBody(request),
+        )
+        return AgentMeasuredGoalSpec(
+            spec = parseGoalSpec(measured.responseText),
+            latencyMs = (System.nanoTime() - startedAt) / NANOS_PER_MILLISECOND,
+            requestBytes = measured.requestBytes,
+            promptTokenCount = measured.promptTokenCount,
+            candidatesTokenCount = measured.candidatesTokenCount,
+            totalTokenCount = measured.totalTokenCount,
+        )
+    }
 
-    suspend fun decideMeasured(
+    private suspend fun executeJson(
         apiKey: String,
         model: GeminiModel,
-        request: GeminiPlannerRequest,
-    ): GeminiMeasuredDecision = withContext(Dispatchers.IO) {
+        requestBody: JSONObject,
+    ): MeasuredJsonResponse = withContext(Dispatchers.IO) {
         require(apiKey.isNotBlank()) {
             "GEMINI_API_KEY가 설정되지 않았습니다. local.properties에 값을 추가하세요."
         }
-        val started = SystemClock.elapsedRealtime()
         coroutineContext.ensureActive()
         val connection = (
             URL(
@@ -132,7 +136,6 @@ class GeminiApiClient {
             setRequestProperty("x-goog-api-key", apiKey)
         }
         try {
-            val requestBody = buildRequestBody(request)
             val requestBytes = requestBody.toString().toByteArray(Charsets.UTF_8)
             connection.outputStream.use { output ->
                 output.write(requestBytes)
@@ -150,13 +153,16 @@ class GeminiApiClient {
                         .optJSONObject("error")
                         ?.optString("message")
                 }.getOrNull()
-                error("Gemini API 오류 HTTP $status: ${apiMessage ?: responseText.take(300)}")
+                throw GeminiPlannerException(
+                    httpStatus = status,
+                    message = "Gemini API 오류 HTTP $status: " +
+                        (apiMessage ?: responseText.take(300)),
+                )
             }
             val response = JSONObject(responseText)
             val usage = response.optJSONObject("usageMetadata")
-            GeminiMeasuredDecision(
-                action = parseResponse(responseText),
-                latencyMs = SystemClock.elapsedRealtime() - started,
+            MeasuredJsonResponse(
+                responseText = responseText,
                 requestBytes = requestBytes.size,
                 promptTokenCount = usage.optionalInt("promptTokenCount"),
                 candidatesTokenCount = usage.optionalInt("candidatesTokenCount"),
@@ -165,6 +171,39 @@ class GeminiApiClient {
         } finally {
             connection.disconnect()
         }
+    }
+
+    internal fun buildGoalInterpretationRequestBody(
+        request: AgentGoalInterpretationRequest,
+    ): JSONObject = JSONObject()
+        .put(
+            "contents",
+            JSONArray().put(
+                JSONObject()
+                    .put("role", "user")
+                    .put(
+                        "parts",
+                        JSONArray().put(
+                            JSONObject().put("text", goalInterpretationPrompt(request)),
+                        ),
+                    ),
+            ),
+        )
+        .put(
+            "generationConfig",
+            JSONObject()
+                .put("responseMimeType", "application/json")
+                .put("responseJsonSchema", goalSpecSchema())
+                .put("maxOutputTokens", GOAL_SPEC_MAX_OUTPUT_TOKENS)
+                .put(
+                    "thinkingConfig",
+                    JSONObject().put("thinkingLevel", "minimal"),
+                ),
+        )
+
+    internal fun parseGoalSpec(responseText: String): AgentGoalSpec {
+        val generated = generatedJsonText(responseText)
+        return AgentGoalSpecJson.decode(JSONObject(generated))
     }
 
     internal fun buildRequestBody(request: GeminiPlannerRequest): JSONObject {
@@ -200,7 +239,7 @@ class GeminiApiClient {
                 "generationConfig",
                 JSONObject()
                     .put("responseMimeType", "application/json")
-                    .put("responseJsonSchema", responseSchema())
+                    .put("responseJsonSchema", PlannerActionCatalog.responseSchema())
                     .put("maxOutputTokens", MAX_OUTPUT_TOKENS)
                     .put(
                         "thinkingConfig",
@@ -209,115 +248,179 @@ class GeminiApiClient {
             )
     }
 
-    internal fun buildCredentialSelectionRequest(
-        goal: String,
-        resources: List<PublicCredentialDescriptor>,
-    ): JSONObject {
-        val prompt = buildString {
-            appendLine("Select only the local resource IDs that may be needed for this goal.")
-            appendLine("You are selecting opaque references, not reading their values.")
-            appendLine("Return an empty list when the goal does not require a listed resource.")
-            appendLine("Never invent an ID.")
-            appendLine("GOAL: $goal")
-            appendLine(
-                "AVAILABLE_RESOURCES: " +
-                    JSONArray(resources.map(PublicCredentialDescriptor::toPlannerJson)),
-            )
-        }
-        return JSONObject()
-            .put(
-                "contents",
-                JSONArray().put(
-                    JSONObject()
-                        .put("role", "user")
-                        .put(
-                            "parts",
-                            JSONArray().put(JSONObject().put("text", prompt)),
-                        ),
-                ),
-            )
-            .put(
-                "generationConfig",
-                JSONObject()
-                    .put("responseMimeType", "application/json")
-                    .put(
-                        "responseJsonSchema",
-                        JSONObject()
-                            .put("type", "object")
-                            .put(
-                                "properties",
-                                JSONObject().put(
-                                    "resource_ids",
-                                    JSONObject()
-                                        .put("type", "array")
-                                        .put(
-                                            "items",
-                                            JSONObject().put("type", "string"),
-                                        ),
-                                ),
-                            )
-                            .put("required", JSONArray().put("resource_ids"))
-                            .put("additionalProperties", false),
-                    )
-                    .put("maxOutputTokens", 128)
-                    .put(
-                        "thinkingConfig",
-                        JSONObject().put("thinkingLevel", "minimal"),
-                    ),
-            )
-    }
-
-    internal fun parseCredentialSelection(responseText: String): Set<String> {
-        val response = JSONObject(responseText)
-        val parts = response
-            .optJSONArray("candidates")
-            ?.optJSONObject(0)
-            ?.optJSONObject("content")
-            ?.optJSONArray("parts")
-            ?: error("Gemini resource selector 응답이 없습니다.")
-        val text = buildString {
-            for (index in 0 until parts.length()) {
-                append(parts.optJSONObject(index)?.optString("text").orEmpty())
-            }
-        }.trim()
-        val ids = JSONObject(text).getJSONArray("resource_ids")
-        return buildSet {
-            for (index in 0 until ids.length()) {
-                ids.optString(index).trim().takeIf(String::isNotBlank)?.let(::add)
-            }
-        }
-    }
-
     internal fun parseResponse(responseText: String): GeminiPlannerAction {
-        val response = JSONObject(responseText)
-        val parts = response
-            .optJSONArray("candidates")
-            ?.optJSONObject(0)
-            ?.optJSONObject("content")
-            ?.optJSONArray("parts")
-            ?: error("Gemini 응답에 action JSON이 없습니다.")
-        val generatedText = buildString {
-            for (index in 0 until parts.length()) {
-                append(parts.optJSONObject(index)?.optString("text").orEmpty())
-            }
-        }.trim()
-        if (generatedText.isBlank()) {
-            error("Gemini가 빈 action을 반환했습니다.")
-        }
-        val action = JSONObject(generatedText)
+        val action = JSONObject(generatedJsonText(responseText))
         return GeminiPlannerAction(
             action = action.getString("action"),
+            reasonCode = action.optString("reason_code", "UNSPECIFIED"),
+            target = action.optString("target", "UNSPECIFIED"),
+            expectedChange = action.optString("expected_change", "UNSPECIFIED"),
             x = action.optionalDouble("x"),
             y = action.optionalDouble("y"),
             endX = action.optionalDouble("end_x"),
             endY = action.optionalDouble("end_y"),
             nodeId = action.optString("node_id").takeIf(String::isNotBlank),
+            option = action.optString("option").takeIf(String::isNotBlank),
+            direction = action.optString("direction").takeIf(String::isNotBlank),
             elementId = action.optString("element_id").takeIf(String::isNotBlank),
             text = action.optString("text").takeIf(String::isNotBlank),
+            appName = action.optString("app_name").takeIf(String::isNotBlank),
+            query = action.optString("query").takeIf(String::isNotBlank),
             durationMs = action.optionalLong("duration_ms"),
             message = action.optString("message").takeIf(String::isNotBlank),
+            plan = action.optJSONArray("plan").stringList(),
+            progressSummary = action.optString(
+                "progress_summary",
+                "No durable progress reported",
+            ),
         )
     }
+
+    private fun generatedJsonText(responseText: String): String {
+        val parts = JSONObject(responseText)
+            .optJSONArray("candidates")
+            ?.optJSONObject(0)
+            ?.optJSONObject("content")
+            ?.optJSONArray("parts")
+            ?: error("Gemini 응답에 JSON이 없습니다.")
+        val generatedText = buildString {
+            for (index in 0 until parts.length()) {
+                append(parts.optJSONObject(index)?.optString("text").orEmpty())
+            }
+        }.trim()
+        require(generatedText.isNotBlank()) { "Gemini가 빈 JSON을 반환했습니다." }
+        return generatedText
+    }
+
+    private fun goalInterpretationPrompt(request: AgentGoalInterpretationRequest): String =
+        buildString {
+            appendLine("Interpret the user's goal into one app-independent structured goal spec.")
+            appendLine(
+                "You are the semantic goal interpreter, not the GUI planner. Do not choose " +
+                    "screen coordinates, node ids, view ids, packages, or Android tools.",
+            )
+            appendLine(
+                "Use open semantic names such as product, variant.color, quantity, date, " +
+                    "movie, audience.adult, seat.type, or price.max. The schema must remain " +
+                    "usable for unfamiliar apps and domains.",
+            )
+            appendLine(
+                "Put explicitly required objects in entities. Put non-negotiable conditions " +
+                    "in constraints and ranking wishes in preferences. Values are strings; " +
+                    "normalize unambiguous dates to YYYY-MM-DD and times to HH:mm.",
+            )
+            appendLine(
+                "When the user names a target app or service, include it as a required entity " +
+                    "named app using its ordinary product name. The runtime uses semantic " +
+                    "entities—not raw-goal regexes—to activate optional skills.",
+            )
+            appendLine(
+                "Do not invent missing user choices. Record a necessary default in assumptions. " +
+                    "Completion criteria must be observable, and forbidden_actions must include " +
+                    "any irreversible boundary the user says not to cross.",
+            )
+            appendLine(
+                "The runtime always keeps execute_payment behind a user confirmation boundary; " +
+                    "include it in forbidden_actions for purchase or booking preparation.",
+            )
+            request.skills.activationCatalogSection()
+                .takeIf(String::isNotBlank)
+                ?.let { skills ->
+                appendLine()
+                appendLine(skills)
+                appendLine(
+                    "Do not copy app-specific workflow fields into the semantic goal spec.",
+                )
+            }
+            appendLine()
+            appendLine("USER_GOAL: ${request.goal}")
+        }
+
+    private fun goalSpecSchema(): JSONObject = JSONObject()
+        .put("type", "object")
+        .put(
+            "properties",
+            JSONObject()
+                .put("objective", stringSchema())
+                .put(
+                    "entities",
+                    arraySchema(
+                        objectSchema(
+                            JSONObject()
+                                .put("name", keySchema())
+                                .put("value", stringSchema())
+                                .put("required", JSONObject().put("type", "boolean")),
+                            listOf("name", "value", "required"),
+                        ),
+                    ),
+                )
+                .put(
+                    "constraints",
+                    arraySchema(
+                        objectSchema(
+                            JSONObject()
+                                .put("subject", keySchema())
+                                .put("operator", keySchema())
+                                .put("value", stringSchema())
+                                .put("hard", JSONObject().put("type", "boolean")),
+                            listOf("subject", "operator", "value", "hard"),
+                        ),
+                    ),
+                )
+                .put(
+                    "preferences",
+                    arraySchema(
+                        objectSchema(
+                            JSONObject()
+                                .put("subject", keySchema())
+                                .put("operator", keySchema())
+                                .put("value", stringSchema())
+                                .put("fallback", stringSchema()),
+                            listOf("subject", "operator", "value"),
+                        ),
+                    ),
+                )
+                .put("success_criteria", arraySchema(stringSchema()))
+                .put("forbidden_actions", arraySchema(keySchema()))
+                .put("assumptions", arraySchema(stringSchema())),
+        )
+        .put(
+            "required",
+            JSONArray(
+                listOf(
+                    "objective",
+                    "entities",
+                    "constraints",
+                    "preferences",
+                    "success_criteria",
+                    "forbidden_actions",
+                    "assumptions",
+                ),
+            ),
+        )
+        .put("additionalProperties", false)
+
+    private fun stringSchema(): JSONObject = JSONObject()
+        .put("type", "string")
+        .put("maxLength", 500)
+
+    private fun keySchema(): JSONObject = JSONObject()
+        .put("type", "string")
+        .put("pattern", """^[\p{L}\p{N}_.-]+$""")
+        .put("maxLength", 80)
+
+    private fun arraySchema(items: JSONObject): JSONObject = JSONObject()
+        .put("type", "array")
+        .put("items", items)
+
+    private fun objectSchema(
+        properties: JSONObject,
+        required: List<String>,
+    ): JSONObject = JSONObject()
+        .put("type", "object")
+        .put("properties", properties)
+        .put("required", JSONArray(required))
+        .put("additionalProperties", false)
 
     private fun plannerPrompt(request: GeminiPlannerRequest): String {
         val legacyNodes = request.observation.nodes
@@ -338,6 +441,8 @@ class GeminiApiClient {
                     .put("clickable", node.clickable)
                     .put("editable", node.editable)
                     .put("scrollable", node.scrollable)
+                    .put("checked", node.checked ?: JSONObject.NULL)
+                    .put("selected", node.selected)
                     .put(
                         "bounds",
                         JSONArray(
@@ -365,6 +470,8 @@ class GeminiApiClient {
                     .put("clickable", element.clickable)
                     .put("editable", element.editable)
                     .put("scrollable", element.scrollable)
+                    .put("checked", element.checked ?: JSONObject.NULL)
+                    .put("selected", element.selected ?: JSONObject.NULL)
                     .put(
                         "confidence",
                         element.confidence ?: JSONObject.NULL,
@@ -394,9 +501,36 @@ class GeminiApiClient {
         return buildString {
             appendLine("You are the visual action planner for an Android GUI agent.")
             appendLine("Choose exactly one safe next action from the current Android screen state.")
+            appendLine(
+                "Return a short auditable decision summary with every action: reason_code " +
+                    "(machine-readable uppercase label), target (the visible control or " +
+                    "container), and expected_change (one short observable result). Do not " +
+                    "return private chain-of-thought.",
+            )
+            appendLine(
+                "Also return plan as a short ordered list of remaining outcome-level steps " +
+                    "and progress_summary as one factual sentence. Revise the plan when the " +
+                    "durable workspace or current screen disproves an assumption.",
+            )
             appendLine("The runtime executes the action, captures a newer screen, and calls you again.")
-            appendLine("Never invent package launch, shell, intent, MCP, or unavailable actions.")
-            appendLine("Prefer tap_node when a current node clearly identifies the target.")
+            appendLine(
+                "Never invent a package name, shell, intent, MCP, or unavailable action. " +
+                    "Use launch_app with the app's visible name when the goal names an app.",
+            )
+            appendLine("Prefer tap_node when a current node clearly identifies an ordinary button.")
+            appendLine(
+                "When the goal requires an exact value and the screen shows an option, size, " +
+                    "color, dropdown, spinner, or '옵션을 선택' control, use select_option " +
+                    "directly with that selector's node_id and the exact requested option. " +
+                    "Do not tap the selector first and do not retry tap_node on it; " +
+                    "select_option owns opening the control, finding the option, and selecting it.",
+            )
+            appendLine(
+                "If a select_option tool result reports OPTION_NOT_FOUND, treat that as " +
+                    "definitive evidence that the current item does not offer the required " +
+                    "option. Never tap or retry the same selector. Navigate back and choose " +
+                    "a different candidate that satisfies the goal.",
+            )
             if (fusedPayload) {
                 appendLine(
                     "SCREEN_ELEMENTS already deduplicates accessibility, local OCR, and " +
@@ -414,16 +548,17 @@ class GeminiApiClient {
                 )
             }
             appendLine("Required arguments by action:")
-            appendLine("- tap: x and y")
-            appendLine("- tap_element: element_id from the current SCREEN_ELEMENTS")
-            appendLine("- tap_node: node_id from the current ACCESSIBILITY_NODES")
-            appendLine("- swipe: x, y, end_x, and end_y (all four are mandatory)")
-            appendLine("- type: text")
-            appendLine("- submit: no arguments; invokes Search/Go/Done on the current field")
-            appendLine("- wait: optional duration_ms")
+            PlannerActionCatalog.contract.forEach { (action, arguments) ->
+                appendLine("- $action: $arguments")
+            }
             appendLine(
                 "Keep swipe coordinates away from system edges: every coordinate should " +
                     "normally be between 50 and 950.",
+            )
+            appendLine(
+                "Prefer scroll over swipe whenever ACCESSIBILITY_NODES or SCREEN_ELEMENTS " +
+                    "contains the intended scrollable container. Use raw swipe only for an " +
+                    "intentional drag or when no scrollable container exists.",
             )
             appendLine(
                 "On an Android launcher, do not keep paging horizontally when an app is " +
@@ -450,12 +585,40 @@ class GeminiApiClient {
             )
             appendLine("For a popup or WebView advertisement, click its visible close/X control.")
             appendLine("Do not assume a dispatched action succeeded; verify on the next screenshot.")
-            appendLine("Return finish_success only when this screenshot proves the whole goal complete.")
+            appendLine(
+                "Return finish_success only when this screenshot proves the whole goal complete. " +
+                    "For finish_success, target must quote the exact visible label that proves " +
+                    "completion; generic summaries are rejected.",
+            )
             appendLine()
             appendLine("GOAL: ${request.goal}")
+            request.taskContract?.let { contract ->
+                appendLine()
+                appendLine(contract.promptSection())
+            }
+            request.skills.promptSection().takeIf(String::isNotBlank)?.let { skillSection ->
+                appendLine()
+                appendLine(skillSection)
+            }
+            request.workspace?.let { workspace ->
+                appendLine()
+                appendLine(workspace.promptSection())
+            }
             appendLine("STEP: ${request.step}/${request.maxSteps}")
             appendLine("PHYSICAL_SCREEN: ${request.screenWidth}x${request.screenHeight}")
             appendLine("FOREGROUND_PACKAGE: ${request.observation.packageName}")
+            request.agentHostPackage?.let { hostPackage ->
+                appendLine("AGENT_HOST_PACKAGE: $hostPackage")
+                if (request.observation.packageName == hostPackage) {
+                    appendLine(
+                        "The foreground screen belongs to the agent host. Its progress text, " +
+                            "tool traces, and generation status are instrumentation, not " +
+                            "external-app loading or goal progress. Never wait for those host " +
+                            "labels. Launch the goal's target app, or finish only if the goal " +
+                            "is already satisfied without device interaction.",
+                    )
+                }
+            }
             appendLine("RECENT_ACTIONS: ${JSONArray(request.recentActions)}")
             appendLine("VISUAL_ATTACHED: ${request.screenshot != null}")
             if (fusedPayload) {
@@ -496,59 +659,6 @@ class GeminiApiClient {
         return score
     }
 
-    private fun responseSchema(): JSONObject = JSONObject()
-        .put("type", "object")
-        .put(
-            "properties",
-            JSONObject()
-                .put(
-                    "action",
-                    JSONObject()
-                        .put("type", "string")
-                        .put(
-                            "enum",
-                            JSONArray(
-                                listOf(
-                                    "tap",
-                                    "tap_element",
-                                    "tap_node",
-                                    "swipe",
-                                    "type",
-                                    "submit",
-                                    "home",
-                                    "back",
-                                    "wait",
-                                    "request_visual",
-                                    "finish_success",
-                                    "finish_failure",
-                                ),
-                            ),
-                        ),
-                )
-                .put("x", normalizedCoordinateSchema())
-                .put("y", normalizedCoordinateSchema())
-                .put("end_x", normalizedCoordinateSchema())
-                .put("end_y", normalizedCoordinateSchema())
-                .put("node_id", JSONObject().put("type", "string"))
-                .put("element_id", JSONObject().put("type", "string"))
-                .put("text", JSONObject().put("type", "string"))
-                .put(
-                    "duration_ms",
-                    JSONObject()
-                        .put("type", "integer")
-                        .put("minimum", 300)
-                        .put("maximum", 5_000),
-                )
-                .put("message", JSONObject().put("type", "string")),
-        )
-        .put("required", JSONArray(listOf("action")))
-        .put("additionalProperties", false)
-
-    private fun normalizedCoordinateSchema(): JSONObject = JSONObject()
-        .put("type", "number")
-        .put("minimum", 0)
-        .put("maximum", 1_000)
-
     private fun JSONObject.optionalDouble(name: String): Double? =
         takeIf { has(name) && !isNull(name) }?.optDouble(name)?.takeIf(Double::isFinite)
 
@@ -558,11 +668,30 @@ class GeminiApiClient {
     private fun JSONObject?.optionalInt(name: String): Int? =
         this?.takeIf { has(name) && !isNull(name) }?.optInt(name)
 
+    private fun JSONArray?.stringList(): List<String> {
+        if (this == null) return emptyList()
+        return buildList {
+            for (index in 0 until length()) {
+                optString(index).trim().takeIf(String::isNotBlank)?.let(::add)
+            }
+        }
+    }
+
+    private data class MeasuredJsonResponse(
+        val responseText: String,
+        val requestBytes: Int,
+        val promptTokenCount: Int?,
+        val candidatesTokenCount: Int?,
+        val totalTokenCount: Int?,
+    )
+
     private companion object {
         const val API_BASE = "https://generativelanguage.googleapis.com/v1beta"
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 60_000
-        const val MAX_OUTPUT_TOKENS = 256
+        const val MAX_OUTPUT_TOKENS = 512
+        const val GOAL_SPEC_MAX_OUTPUT_TOKENS = 1_024
+        const val NANOS_PER_MILLISECOND = 1_000_000L
         const val MAX_UI_NODES = 36
         const val MAX_SCREEN_ELEMENTS = 64
         val SEARCH_TERMS = listOf(

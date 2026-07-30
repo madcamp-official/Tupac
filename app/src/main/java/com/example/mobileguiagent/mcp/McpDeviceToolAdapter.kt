@@ -1,16 +1,15 @@
 package com.example.mobileguiagent.mcp
 
 import android.util.Base64
-import com.example.mobileguiagent.device.BackDeviceTool
 import com.example.mobileguiagent.device.CaptureScreenDeviceTool
 import com.example.mobileguiagent.device.LaunchAppDeviceTool
 import com.example.mobileguiagent.device.ListFieldsDeviceTool
 import com.example.mobileguiagent.device.ListAppsDeviceTool
 import com.example.mobileguiagent.device.OpenScreenDeviceTool
+import com.example.mobileguiagent.device.OpenUriDeviceTool
 import com.example.mobileguiagent.device.SystemActionDeviceTool
 import com.example.mobileguiagent.device.SystemTaskDeviceTool
 import com.example.mobileguiagent.device.ScrollDeviceTool
-import com.example.mobileguiagent.device.TypeTextDeviceTool
 import com.example.mobileguiagent.device.DeviceToolCall
 import com.example.mobileguiagent.device.DeviceToolDefinition
 import com.example.mobileguiagent.device.DeviceToolRegistry
@@ -20,6 +19,7 @@ import com.example.mobileguiagent.device.GoHomeDeviceTool
 import com.example.mobileguiagent.device.SetTextDeviceTool
 import com.example.mobileguiagent.device.SubmitTextDeviceTool
 import com.example.mobileguiagent.device.SwipeDeviceTool
+import com.example.mobileguiagent.device.TapNodeDeviceTool
 import com.example.mobileguiagent.device.TapDeviceTool
 import org.json.JSONArray
 import org.json.JSONObject
@@ -33,12 +33,14 @@ class McpDeviceToolAdapter(
         EXTERNAL_SCREENSHOT_NAME to CaptureScreenDeviceTool.NAME,
         EXTERNAL_HOME_NAME to GoHomeDeviceTool.NAME,
         EXTERNAL_BACK_NAME to GoBackDeviceTool.NAME,
+        EXTERNAL_CLICK_NODE_NAME to TapNodeDeviceTool.NAME,
         EXTERNAL_TAP_NAME to TapDeviceTool.NAME,
         EXTERNAL_SWIPE_NAME to SwipeDeviceTool.NAME,
         EXTERNAL_SCROLL_NAME to ScrollDeviceTool.NAME,
         EXTERNAL_TYPE_TEXT_NAME to SetTextDeviceTool.NAME,
         EXTERNAL_SUBMIT_TEXT_NAME to SubmitTextDeviceTool.NAME,
         EXTERNAL_OPEN_SCREEN_NAME to OpenScreenDeviceTool.NAME,
+        EXTERNAL_OPEN_URI_NAME to OpenUriDeviceTool.NAME,
         EXTERNAL_START_TASK_NAME to SystemTaskDeviceTool.NAME,
         EXTERNAL_SYSTEM_ACTION_NAME to SystemActionDeviceTool.NAME,
         EXTERNAL_LAUNCH_APP_NAME to LaunchAppDeviceTool.NAME,
@@ -189,12 +191,14 @@ class McpDeviceToolAdapter(
         const val EXTERNAL_SCREENSHOT_NAME = "device_screenshot"
         const val EXTERNAL_HOME_NAME = "device_home"
         const val EXTERNAL_BACK_NAME = "device_back"
+        const val EXTERNAL_CLICK_NODE_NAME = "device_click_node"
         const val EXTERNAL_TAP_NAME = "device_tap"
         const val EXTERNAL_SWIPE_NAME = "device_swipe"
         const val EXTERNAL_SCROLL_NAME = "device_scroll"
         const val EXTERNAL_TYPE_TEXT_NAME = "device_type_text"
         const val EXTERNAL_SUBMIT_TEXT_NAME = "device_submit_text"
         const val EXTERNAL_OPEN_SCREEN_NAME = "device_open_screen"
+        const val EXTERNAL_OPEN_URI_NAME = "device_open_uri"
         const val EXTERNAL_START_TASK_NAME = "device_start_task"
         const val EXTERNAL_SYSTEM_ACTION_NAME = "device_system_action"
         const val EXTERNAL_LAUNCH_APP_NAME = "device_launch_app"

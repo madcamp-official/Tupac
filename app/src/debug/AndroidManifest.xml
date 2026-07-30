@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-    <application>
+    <application android:usesCleartextTraffic="true">
         <!-- ADB may inject a goal without covering the app under test. The
              release manifest keeps this receiver private. -->
         <receiver
@@ -9,17 +9,6 @@
             android:exported="true"
             tools:replace="android:exported" />
 
-        <!-- Debug-only adb entry point for repeatable on-device OCR/VLM timing. -->
-        <receiver
-            android:name=".debug.PopupBenchmarkReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="com.example.mobileguiagent.BENCHMARK_ICON_POPUP" />
-                <action android:name="com.example.mobileguiagent.BENCHMARK_OCR_POPUP" />
-                <action android:name="com.example.mobileguiagent.BENCHMARK_LOCAL_VLM_POPUP" />
-                <action android:name="com.example.mobileguiagent.BENCHMARK_LOCAL_VLM_SAVED_IMAGE" />
-            </intent-filter>
-        </receiver>
         <receiver
             android:name=".debug.GeminiOcrBenchmarkReceiver"
             android:exported="true">

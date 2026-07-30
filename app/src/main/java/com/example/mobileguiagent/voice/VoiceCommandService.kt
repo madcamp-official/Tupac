@@ -29,7 +29,7 @@ import kotlinx.coroutines.launch
  *
  * Moonshine Base Korean produces the first completed local transcript, which is forwarded
  * to the same LocalChatRepository used by typed chat. The service stays in the
- * foreground until MiniCPM finishes so microphone use remains valid off-screen.
+ * foreground until the agent finishes so microphone use remains valid off-screen.
  */
 class VoiceCommandService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)

@@ -29,6 +29,9 @@ data class ScreenElement(
     val sources: Set<ScreenElementSource>,
     /** Confidence is present only for locally inferred visual candidates. */
     val confidence: Double? = null,
+    /** Accessibility state; null for OCR/icon-only elements. */
+    val checked: Boolean? = null,
+    val selected: Boolean? = null,
 )
 
 /**
@@ -36,18 +39,97 @@ data class ScreenElement(
  * matching nodes or adds text that the accessibility tree did not expose.
  */
 object ScreenElementFusion {
-    fun shouldRunOcr(snapshot: UiSnapshot): Boolean {
+    enum class OcrTrigger {
+        SPARSE_TREE,
+        UNLABELED_ACTIONS,
+        SPARSE_WEBVIEW,
+        POPUP_WITHOUT_ACCESSIBLE_CLOSE,
+        REPEATED_UNCHANGED_ACTION,
+        EXPLICIT_POPUP_DISMISS_GOAL,
+    }
+
+    data class OcrDecision(
+        val shouldRun: Boolean,
+        val triggers: Set<OcrTrigger>,
+        val readableLabels: Int,
+        val actionableNodes: Int,
+        val unlabeledActions: Int,
+    )
+
+    /**
+     * Decides whether the slower pixel path is likely to add information.
+     *
+     * A WebView by itself is deliberately not enough: accessible WebViews can
+     * expose a complete semantic tree and should retain the fast path.
+     */
+    fun decideOcr(
+        snapshot: UiSnapshot,
+        repeatedUnchangedActions: Int = 0,
+        explicitPopupDismissGoal: Boolean = false,
+    ): OcrDecision {
         val meaningful = snapshot.nodes.filter { node ->
             node.enabled && node.isMeaningfulForAgent()
         }
         val readableLabels = meaningful.count { node ->
-            !node.text.isNullOrBlank() || !node.contentDescription.isNullOrBlank()
+            node.hasReadableLabel()
         }
-        val webViewPresent = meaningful.any { node ->
-            node.className?.contains("WebView", ignoreCase = true) == true
+        val actionable = meaningful.filter { node ->
+            node.clickable || node.editable || node.scrollable
         }
-        return webViewPresent || readableLabels < MIN_READABLE_LABELS
+        val unlabeledActions = actionable.count { node -> !node.hasReadableLabel() }
+        // A WebView container is structural evidence even when the container
+        // itself has no label or action and is therefore not "meaningful".
+        val webViewPresent = snapshot.nodes.any { node ->
+            node.enabled &&
+                node.visibleToUser &&
+                node.className?.contains("WebView", ignoreCase = true) == true
+        }
+        val labels = meaningful.flatMap { node ->
+            listOfNotNull(node.text, node.contentDescription, node.hint)
+        }.map(String::lowercase)
+        val popupLanguagePresent = labels.any { label ->
+            POPUP_TERMS.any(label::contains)
+        }
+        val accessibleClosePresent = meaningful.any { node ->
+            node.clickable &&
+                listOfNotNull(node.text, node.contentDescription, node.viewId)
+                    .map(String::lowercase)
+                    .any { label -> CLOSE_LABELS.any(label::contains) }
+        }
+
+        val triggers = buildSet {
+            if (readableLabels < MIN_READABLE_LABELS) {
+                add(OcrTrigger.SPARSE_TREE)
+            }
+            if (
+                actionable.size >= MIN_ACTIONS_FOR_RATIO &&
+                unlabeledActions.toDouble() / actionable.size >= MAX_UNLABELED_ACTION_RATIO
+            ) {
+                add(OcrTrigger.UNLABELED_ACTIONS)
+            }
+            if (webViewPresent && readableLabels < MIN_WEBVIEW_READABLE_LABELS) {
+                add(OcrTrigger.SPARSE_WEBVIEW)
+            }
+            if (popupLanguagePresent && !accessibleClosePresent) {
+                add(OcrTrigger.POPUP_WITHOUT_ACCESSIBLE_CLOSE)
+            }
+            if (repeatedUnchangedActions >= OCR_AFTER_UNCHANGED_ACTIONS) {
+                add(OcrTrigger.REPEATED_UNCHANGED_ACTION)
+            }
+            if (explicitPopupDismissGoal) {
+                add(OcrTrigger.EXPLICIT_POPUP_DISMISS_GOAL)
+            }
+        }
+        return OcrDecision(
+            shouldRun = triggers.isNotEmpty(),
+            triggers = triggers,
+            readableLabels = readableLabels,
+            actionableNodes = actionable.size,
+            unlabeledActions = unlabeledActions,
+        )
     }
+
+    fun shouldRunOcr(snapshot: UiSnapshot): Boolean = decideOcr(snapshot).shouldRun
 
     fun fromAccessibility(snapshot: UiSnapshot): List<ScreenElement> =
         snapshot.nodes
@@ -163,6 +245,7 @@ object ScreenElementFusion {
                 scrollable = element.scrollable,
                 enabled = true,
                 checked = null,
+                selected = element.selected ?: false,
                 bounds = Rect(element.bounds),
                 depth = 0,
                 visibleToUser = true,
@@ -181,6 +264,8 @@ object ScreenElementFusion {
         scrollable = scrollable,
         nodeId = id,
         sources = setOf(ScreenElementSource.ACCESSIBILITY),
+        checked = checked,
+        selected = selected,
     )
 
     private fun labelsMatch(
@@ -222,7 +307,17 @@ object ScreenElementFusion {
     private fun normalized(value: String): String =
         value.lowercase().replace(NON_SEMANTIC, "")
 
+    private fun UiNode.hasReadableLabel(): Boolean =
+        !text.isNullOrBlank() ||
+            !contentDescription.isNullOrBlank() ||
+            !hint.isNullOrBlank() ||
+            !viewId.isNullOrBlank()
+
     private const val MIN_READABLE_LABELS = 6
+    private const val MIN_WEBVIEW_READABLE_LABELS = 12
+    private const val MIN_ACTIONS_FOR_RATIO = 3
+    private const val MAX_UNLABELED_ACTION_RATIO = 0.5
+    private const val OCR_AFTER_UNCHANGED_ACTIONS = 2
     private const val MIN_CONTAINMENT_LENGTH = 3
     private const val MIN_OVERLAP_OF_SMALLER = 0.5
     private const val MAX_TEXT_LENGTH = 160
@@ -232,5 +327,14 @@ object ScreenElementFusion {
         "close",
         "dismiss",
         "cancel",
+        "btnclose",
+    )
+    private val POPUP_TERMS = listOf(
+        "팝업",
+        "오늘 하루",
+        "오늘은 그만",
+        "다시 보지",
+        "그만 보기",
+        "popup",
     )
 }

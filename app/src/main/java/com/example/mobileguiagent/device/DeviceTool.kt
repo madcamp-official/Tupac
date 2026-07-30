@@ -31,7 +31,7 @@ sealed interface DeviceToolResult {
         val message: String,
     ) : DeviceToolResult
 
-    /** 이미지가 아니라 "동작이 성공했다"만 돌려주는 tool(back, swipe, type_text 등)용 결과. */
+    /** 이미지가 아니라 동작 성공만 돌려주는 도구(go_back, swipe, set_text 등)의 결과. */
     data class Success(
         val message: String? = null,
     ) : DeviceToolResult
@@ -67,14 +67,15 @@ class DeviceToolRegistry(
         GoBackDeviceTool,
         WaitDeviceTool,
         TapNodeDeviceTool,
+        SelectOptionDeviceTool,
         SetTextDeviceTool,
         FillSecretDeviceTool,
         SubmitTextDeviceTool,
         TapDeviceTool,
         SwipeDeviceTool,
-        FinishDeviceTool,
         ScrollDeviceTool,
         OpenScreenDeviceTool,
+        OpenUriDeviceTool,
         SystemTaskDeviceTool,
         SystemActionDeviceTool,
         LaunchAppDeviceTool,

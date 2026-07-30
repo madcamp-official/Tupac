@@ -15,6 +15,14 @@ val geminiApiKey = localProperties
     .getProperty("GEMINI_API_KEY", "")
     .replace("\\", "\\\\")
     .replace("\"", "\\\"")
+fun localBuildConfigString(name: String): String = localProperties
+    .getProperty(name, "")
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+
+val supabaseUrl = localBuildConfigString("SUPABASE_URL")
+val supabasePublishableKey = localBuildConfigString("SUPABASE_PUBLISHABLE_KEY")
+val mcpGatewayUrl = localBuildConfigString("MCP_GATEWAY_URL")
 
 android {
     namespace = "com.example.mobileguiagent"
@@ -41,6 +49,15 @@ android {
         // Keep the value out of source control. Developers may define
         // GEMINI_API_KEY in the untracked root local.properties file.
         buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
+        // The Supabase publishable key is intentionally client-safe. Secret
+        // and service_role keys must never be added to the Android build.
+        buildConfigField("String", "SUPABASE_URL", "\"$supabaseUrl\"")
+        buildConfigField(
+            "String",
+            "SUPABASE_PUBLISHABLE_KEY",
+            "\"$supabasePublishableKey\"",
+        )
+        buildConfigField("String", "MCP_GATEWAY_URL", "\"$mcpGatewayUrl\"")
     }
 
     buildTypes {
@@ -83,14 +100,7 @@ dependencies {
     // bindings on the same ABI so SenseVoice and openWakeWord can coexist.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.27.0")
     implementation(libs.moonshine.voice)
-    // Experimental Android-native LLM backend. It is kept beside llama.cpp so
-    // we can benchmark the same tool-planning prompt without changing the
-    // production model path until device measurements justify a migration.
-    implementation("com.google.ai.edge.litertlm:litertlm-android:0.14.0")
-    // LiteRT-LM 0.14's Kotlin callback was compiled against the modern
-    // SendChannel default-method ABI. AndroidX otherwise resolves 1.9.0,
-    // which crashes at the end of the first streamed response.
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("com.squareup.okhttp3:okhttp:5.4.0")
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MobileGUIAgent 연결 승인</title>
+    <link rel="stylesheet" href="/oauth/consent.css">
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">MobileGUIAgent</p>
+      <h1>MCP 연결 승인</h1>
+      <p id="status">인증 요청을 확인하는 중입니다.</p>
+
+      <section id="login" hidden>
+        <label for="email">이메일</label>
+        <input id="email" type="email" autocomplete="email">
+        <button id="send-code" type="button">인증 코드 받기</button>
+        <div id="verify" hidden>
+          <label for="code">인증 코드</label>
+          <input id="code" inputmode="numeric" autocomplete="one-time-code">
+          <button id="verify-code" type="button">로그인</button>
+        </div>
+      </section>
+
+      <section id="consent" hidden>
+        <h2 id="client-name"></h2>
+        <p><span id="client-name-copy"></span>에서 다음 계정 접근을 요청했습니다.</p>
+        <dl>
+          <dt>계정</dt><dd id="user-email"></dd>
+          <dt>권한</dt><dd id="scopes"></dd>
+          <dt>돌아갈 주소</dt><dd id="redirect-uri"></dd>
+        </dl>
+        <p class="notice">
+          원격 명령은 휴대폰의 로컬 정책을 다시 통과하며, 민감 작업은 이
+          연결에서 자동 허용되지 않습니다.
+        </p>
+        <div class="actions">
+          <button id="deny" class="secondary" type="button">거부</button>
+          <button id="approve" type="button">연결 승인</button>
+        </div>
+      </section>
+      <p id="error" role="alert"></p>
+    </main>
+    <script src="/oauth/supabase.js"></script>
+    <script src="/oauth/consent.js"></script>
+  </body>
+</html>

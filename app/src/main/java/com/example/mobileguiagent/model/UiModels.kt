@@ -5,6 +5,11 @@ import java.security.MessageDigest
 
 data class UiNode(
     val id: String,
+    /**
+     * Stable only inside this snapshot. It lets runtime policies reason about
+     * dialog ownership and clickable ancestors without app-specific node IDs.
+     */
+    val parentId: String? = null,
     val text: String?,
     val contentDescription: String?,
     // 빈 입력창의 안내 문구("받는사람", "비밀번호를 입력하세요"). 값이 들어가기
@@ -13,12 +18,16 @@ data class UiNode(
     // contentDescription이 모두 비어 있고 hintText에만 라벨이 있었다).
     val hint: String? = null,
     val className: String?,
+    /** Semantic widget role reported by Android/WebView, e.g. "drop-down list". */
+    val roleDescription: String? = null,
     val viewId: String?,
     val clickable: Boolean,
     val editable: Boolean,
     val scrollable: Boolean,
     val enabled: Boolean,
     val checked: Boolean?,
+    /** Selection state exposed by AccessibilityNodeInfo for tabs/list choices. */
+    val selected: Boolean = false,
     /** Strong local-only signal supplied directly by AccessibilityNodeInfo. */
     val password: Boolean = false,
     /** Helps local input handling without exposing the field value. */
@@ -77,6 +86,8 @@ data class UiSnapshot(
             append(packageName)
             nodes.forEach { node ->
                 append('|')
+                append(node.parentId.orEmpty())
+                append('|')
                 append(node.text.orEmpty())
                 append('|')
                 append(node.contentDescription.orEmpty())
@@ -85,12 +96,20 @@ data class UiSnapshot(
                 append('|')
                 append(node.checked)
                 append('|')
+                append(node.selected)
+                append('|')
                 // 슬라이더를 옮기면 화면이 바뀐 것으로 쳐야 한다. 지문에 안 넣으면
                 // 밝기를 성공적으로 내려도 "화면 그대로"로 기록되고, 그게 세 번
                 // 이어지면 에이전트가 정체로 보고 멈춘다.
                 append(node.range?.current)
                 append('|')
-                append(node.bounds.flattenToString())
+                append(node.bounds.left)
+                append(',')
+                append(node.bounds.top)
+                append(',')
+                append(node.bounds.right)
+                append(',')
+                append(node.bounds.bottom)
             }
         }
         val digest = MessageDigest.getInstance("SHA-256")

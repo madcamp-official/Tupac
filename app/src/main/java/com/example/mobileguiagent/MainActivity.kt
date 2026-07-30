@@ -17,14 +17,20 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -43,9 +49,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -63,16 +69,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.mobileguiagent.accessibility.AgentAccessibilityService
-import com.example.mobileguiagent.agent.AgentRuntimeMode
 import com.example.mobileguiagent.mcp.McpServerRepository
 import com.example.mobileguiagent.model.ChatMessage
 import com.example.mobileguiagent.model.ChatArchive
 import com.example.mobileguiagent.model.ChatRole
 import com.example.mobileguiagent.model.LocalChatRepository
 import com.example.mobileguiagent.model.LocalChatState
+import com.example.mobileguiagent.remote.RemoteConnectionDialog
+import com.example.mobileguiagent.remote.RemoteConnectionNotice
+import com.example.mobileguiagent.remote.RemoteDeviceRepository
 import com.example.mobileguiagent.ui.theme.MobileGUIAgentTheme
 import com.example.mobileguiagent.voice.MoonshineKoreanState
 import com.example.mobileguiagent.voice.MoonshineKoreanRepository
@@ -86,6 +95,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         LocalChatRepository.refresh(applicationContext)
         MoonshineKoreanRepository.refresh(applicationContext)
+        RemoteDeviceRepository.refresh(applicationContext)
+        if (
+            RemoteDeviceRepository.state.value.configured &&
+            !RemoteDeviceRepository.state.value.running
+        ) {
+            RemoteDeviceRepository.start(applicationContext)
+        }
 
         setContent {
             MobileGUIAgentTheme {
@@ -99,13 +115,12 @@ class MainActivity : ComponentActivity() {
                         onBack = { showVault = false },
                     )
                 } else {
-                LocalModelChatScreen(
+                CloudAgentScreen(
                     onOpenVault = { showVault = true },
                     onSend = { message ->
                         LocalChatRepository.send(
                             context = applicationContext,
                             input = message,
-                            controllerVisible = true,
                         )
                     },
                     onClear = LocalChatRepository::clear,
@@ -134,7 +149,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
-private fun LocalModelChatScreen(
+private fun CloudAgentScreen(
     onOpenVault: () -> Unit,
     onSend: (String) -> Unit,
     onClear: () -> Unit,
@@ -146,6 +161,7 @@ private fun LocalModelChatScreen(
     val accessibilityConnected by
         AgentAccessibilityService.connectionState.collectAsState()
     val mcpState by McpServerRepository.state.collectAsState()
+    val remoteDeviceState by RemoteDeviceRepository.state.collectAsState()
     val voiceState by MoonshineKoreanRepository.state.collectAsState()
     val wakeWordState by WakeWordRepository.state.collectAsState()
     val context = LocalContext.current
@@ -154,6 +170,7 @@ private fun LocalModelChatScreen(
     var startWakeWordAfterPermission by remember { mutableStateOf(false) }
     var showArchives by remember { mutableStateOf(false) }
     var showCredentialVault by remember { mutableStateOf(false) }
+    var showRemoteConnection by remember { mutableStateOf(false) }
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) {
@@ -280,52 +297,17 @@ private fun LocalModelChatScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            if (chatState.runtimeMode == AgentRuntimeMode.GEMINI) {
-                                "Tupac"
-                            } else {
-                                "Tupac"
-                            },
-                        )
-                        Text(
-                            chatState.status,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-                actions = {
-                    TextButton(onClick = LocalChatRepository::toggleRuntimeMode) {
-                        Text(
-                            if (chatState.runtimeMode == AgentRuntimeMode.GEMINI) {
-                                "로컬"
-                            } else {
-                                "Gemini"
-                            },
-                        )
-                    }
-                    TextButton(onClick = onToggleMcp) {
-                        Text(if (mcpState.running) "MCP 끄기" else "MCP 켜기")
-                    }
-                    TextButton(onClick = { showArchives = true }) {
-                        Text("기록")
-                    }
-                    TextButton(onClick = { showCredentialVault = true }) {
-                        Text("보안")
-                    }
-                    TextButton(onClick = onOpenVault) {
-                        Text("내 정보")
-                    }
-                    TextButton(
-                        onClick = { LocalChatRepository.archiveCurrent(context) },
-                        enabled = chatState.messages.isNotEmpty() && !chatState.generating,
-                    ) {
-                        Text("보관")
-                    }
-                },
+            AppHeader(
+                state = chatState,
+                mcpRunning = mcpState.running,
+                remoteConnected = remoteDeviceState.running,
+                onCycleModel = LocalChatRepository::cycleCloudModel,
+                onToggleMcp = onToggleMcp,
+                onOpenRemote = { showRemoteConnection = true },
+                onOpenArchives = { showArchives = true },
+                onOpenCredentials = { showCredentialVault = true },
+                onOpenVault = onOpenVault,
+                onArchive = { LocalChatRepository.archiveCurrent(context) },
             )
         },
         bottomBar = {
@@ -346,6 +328,7 @@ private fun LocalModelChatScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
                 .padding(contentPadding),
         ) {
             if (!accessibilityConnected) {
@@ -356,6 +339,20 @@ private fun LocalModelChatScreen(
                 McpConnectionNotice(
                     endpoint = mcpState.endpoints.firstOrNull(),
                     pairingToken = mcpState.pairingToken,
+                )
+            }
+
+            if (remoteDeviceState.configured || remoteDeviceState.error != null) {
+                RemoteConnectionNotice(
+                    state = remoteDeviceState,
+                    onToggle = {
+                        if (remoteDeviceState.running) {
+                            RemoteDeviceRepository.stop(context)
+                        } else {
+                            RemoteDeviceRepository.start(context)
+                        }
+                    },
+                    onConfigure = { showRemoteConnection = true },
                 )
             }
 
@@ -377,9 +374,10 @@ private fun LocalModelChatScreen(
                     state = listState,
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                        .padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    item { Spacer(Modifier.height(4.dp)) }
                     items(
                         items = chatState.messages,
                         key = ChatMessage::id,
@@ -389,17 +387,16 @@ private fun LocalModelChatScreen(
                     if (chatState.generating) {
                         item {
                             Row(
-                                modifier = Modifier.padding(12.dp),
+                                modifier = Modifier.padding(vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
-                                CircularProgressIndicator(strokeWidth = 2.dp)
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                )
                                 Text(
-                                    if (chatState.runtimeMode == AgentRuntimeMode.GEMINI) {
-                                        "Gemini가 화면을 판단하고 있습니다."
-                                    } else {
-                                        "로컬 모델이 답변을 생성하고 있습니다."
-                                    },
+                                    "Gemini가 화면을 판단하고 있습니다.",
                                 )
                             }
                         }
@@ -431,6 +428,141 @@ private fun LocalModelChatScreen(
             onDismiss = { showCredentialVault = false },
         )
     }
+    if (showRemoteConnection) {
+        RemoteConnectionDialog(
+            currentEndpoint = remoteDeviceState.endpoint,
+            currentDeviceId = remoteDeviceState.deviceId,
+            onDismiss = { showRemoteConnection = false },
+            onSaved = {
+                RemoteDeviceRepository.start(context)
+                showRemoteConnection = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun AppHeader(
+    state: LocalChatState,
+    mcpRunning: Boolean,
+    remoteConnected: Boolean,
+    onCycleModel: () -> Unit,
+    onToggleMcp: () -> Unit,
+    onOpenRemote: () -> Unit,
+    onOpenArchives: () -> Unit,
+    onOpenCredentials: () -> Unit,
+    onOpenVault: () -> Unit,
+    onArchive: () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 1.dp,
+        shadowElevation = 2.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 14.dp, bottom = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Tupac",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                    ) {
+                        Box(
+                            Modifier
+                                .size(7.dp)
+                                .background(
+                                    if (state.error == null) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    },
+                                    CircleShape,
+                                ),
+                        )
+                        Text(
+                            state.status,
+                            maxLines = 1,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                ControlChip(
+                    label = state.cloudModel.displayName,
+                    active = true,
+                    onClick = onCycleModel,
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                ControlChip(
+                    label = if (mcpRunning) "MCP 연결됨" else "MCP",
+                    active = mcpRunning,
+                    onClick = onToggleMcp,
+                )
+                ControlChip(
+                    label = if (remoteConnected) "클라우드 연결됨" else "클라우드",
+                    active = remoteConnected,
+                    onClick = onOpenRemote,
+                )
+                ControlChip("기록", onClick = onOpenArchives)
+                ControlChip("계정", onClick = onOpenCredentials)
+                ControlChip("내 정보", onClick = onOpenVault)
+                ControlChip(
+                    "보관",
+                    enabled = state.messages.isNotEmpty() && !state.generating,
+                    onClick = onArchive,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ControlChip(
+    label: String,
+    active: Boolean = false,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        color = if (active) {
+            MaterialTheme.colorScheme.primaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.66f)
+        },
+        contentColor = if (active) {
+            MaterialTheme.colorScheme.onPrimaryContainer
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.labelMedium,
+        )
+    }
 }
 
 /**
@@ -452,16 +584,17 @@ private fun McpConnectionNotice(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 6.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
         ),
+        shape = RoundedCornerShape(14.dp),
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text("MCP 연결 주소", style = MaterialTheme.typography.titleSmall)
+            Text("MCP 연결", style = MaterialTheme.typography.titleSmall)
             Text(
                 pairingUrl,
                 style = MaterialTheme.typography.bodySmall,
@@ -534,42 +667,49 @@ private fun ArchiveDialog(
 
 @Composable
 private fun EmptyChat(state: LocalChatState) {
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(32.dp),
-        contentAlignment = Alignment.Center,
+            .padding(horizontal = 24.dp, vertical = 36.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
     ) {
         Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(
-                if (state.runtimeMode == AgentRuntimeMode.GEMINI) {
-                    state.cloudModel.displayName
-                } else {
-                    state.activeModelProfile.displayName
-                },
-                style = MaterialTheme.typography.headlineSmall,
+                "휴대폰에서\n바로 실행하세요.",
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onBackground,
             )
             Text(
-                when (state.runtimeMode) {
-                    AgentRuntimeMode.GEMINI ->
-                        if (state.geminiConfigured) {
-                            "현재 화면은 Gemini API로 전송되며 동작은 폰에서 실행됩니다."
-                        } else {
-                            "local.properties에 GEMINI_API_KEY를 설정해야 사용할 수 있습니다."
-                        }
-                    AgentRuntimeMode.LOCAL ->
-                        if (state.modelFilePresent) {
-                            "휴대폰에서 실행되는 로컬 모델과 대화를 시작하세요."
-                        } else {
-                            "모델 파일을 앱 저장소에 넣어야 대화를 시작할 수 있습니다."
-                        }
+                if (state.geminiConfigured) {
+                    "민감값을 마스킹한 화면 정보는 Gemini API로 전송되고 동작은 폰에서 실행됩니다."
+                } else {
+                    "local.properties에 GEMINI_API_KEY를 설정해야 사용할 수 있습니다."
                 },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.widthIn(max = 420.dp),
             )
+        }
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = RoundedCornerShape(18.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    state.cloudModel.displayName,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    "앱 실행, 화면 탐색, 입력과 선택을 한 문장으로 요청할 수 있습니다.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f),
+                )
+            }
         }
     }
 }
@@ -616,19 +756,22 @@ private fun ChatBubble(message: ChatMessage) {
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
         Card(
-            modifier = Modifier.widthIn(max = 320.dp),
+            modifier = Modifier.widthIn(max = 360.dp),
             shape = RoundedCornerShape(
-                topStart = 18.dp,
-                topEnd = 18.dp,
-                bottomStart = if (isUser) 18.dp else 4.dp,
-                bottomEnd = if (isUser) 4.dp else 18.dp,
+                topStart = 16.dp,
+                topEnd = 16.dp,
+                bottomStart = if (isUser) 16.dp else 5.dp,
+                bottomEnd = if (isUser) 5.dp else 16.dp,
             ),
             colors = CardDefaults.cardColors(
                 containerColor = if (isUser) {
                     MaterialTheme.colorScheme.primaryContainer
                 } else {
-                    MaterialTheme.colorScheme.surfaceVariant
+                    MaterialTheme.colorScheme.surface
                 },
+            ),
+            elevation = CardDefaults.cardElevation(
+                defaultElevation = if (isUser) 0.dp else 1.dp,
             ),
         ) {
             Text(
@@ -646,15 +789,15 @@ private fun ToolTraceCard(message: ChatMessage) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = 4.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (isCall) {
-                MaterialTheme.colorScheme.secondaryContainer
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.62f)
             } else {
                 MaterialTheme.colorScheme.surfaceVariant
             },
         ),
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(12.dp),
     ) {
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
             Text(
@@ -687,7 +830,8 @@ private fun ChatInput(
         modifier = Modifier
             .fillMaxWidth()
             .imePadding()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -696,9 +840,9 @@ private fun ChatInput(
         ) {
             Text(
                 text = if (wakeWordState.enabled) {
-                    "Hey Tupac 백그라운드 대기 중"
+                    "Hey Tupac 대기 중"
                 } else {
-                    "Hey Tupac 백그라운드 호출"
+                    "백그라운드 음성 호출"
                 },
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -749,6 +893,7 @@ private fun ChatInput(
                 },
                 minLines = 1,
                 maxLines = 5,
+                shape = RoundedCornerShape(16.dp),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { onSubmit() }),
                 trailingIcon = {

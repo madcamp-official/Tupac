@@ -182,7 +182,7 @@ object MoonshineKoreanRepository {
     }
 
     fun markCommandForwarded(text: String) {
-        mutableState.value = mutableState.value.copy(status = "MiniCPM 입력 전달 완료: $text")
+        mutableState.value = mutableState.value.copy(status = "에이전트 입력 전달 완료: $text")
     }
 
     private fun captureAndTranscribe(active: OfflineRecognizer, recorder: AudioRecord) {

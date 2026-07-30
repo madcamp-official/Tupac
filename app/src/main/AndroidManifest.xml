@@ -34,20 +34,6 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MobileGUIAgent">
 
-        <!--
-            LiteRT-LM's GPU executor can use WebGPU/Vulkan for the model while
-            its sampler still loads the vendor OpenCL runtime. Declaring these
-            optional libraries makes them visible to the Android linker
-            namespace without preventing installation on devices that lack
-            either implementation.
-        -->
-        <uses-native-library
-            android:name="libOpenCL.so"
-            android:required="false" />
-        <uses-native-library
-            android:name="libvndksupport.so"
-            android:required="false" />
-
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -77,12 +63,30 @@
         </service>
 
         <service
+            android:name=".agent.AgentRunForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a user-requested cross-app GUI agent run active and visible." />
+        </service>
+
+        <service
             android:name=".mcp.PocketMcpService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Runs a user-visible MCP server for local device observation." />
+        </service>
+
+        <service
+            android:name=".remote.RemoteDeviceService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Maintains a user-visible outbound connection to the configured MCP gateway." />
         </service>
 
         <service

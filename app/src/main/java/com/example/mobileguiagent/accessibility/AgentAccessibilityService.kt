@@ -185,24 +185,31 @@ class AgentAccessibilityService : AccessibilityService() {
     fun collectNodes(
         node: AccessibilityNodeInfo?,
         depth: Int = 0,
+        parentId: String? = null,
         output: MutableList<UiNode> = mutableListOf(),
     ): List<UiNode> {
         if (node == null || output.size >= MAX_NODES || depth > MAX_DEPTH) return output
 
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
+        val nodeId = "node_${output.size}"
         output += UiNode(
-            id = "node_${output.size}",
+            id = nodeId,
+            parentId = parentId,
             text = node.text?.toString(),
             contentDescription = node.contentDescription?.toString(),
             hint = node.hintText?.toString(),
             className = node.className?.toString(),
+            roleDescription = node.extras
+                .getCharSequence("AccessibilityNodeInfo.roleDescription")
+                ?.toString(),
             viewId = node.viewIdResourceName,
             clickable = node.isClickable,
             editable = node.isEditable,
             scrollable = node.isScrollable,
             enabled = node.isEnabled,
             checked = if (node.isCheckable) node.isChecked else null,
+            selected = node.isSelected,
             password = node.isPassword,
             focused = node.isFocused,
             inputType = node.inputType,
@@ -215,7 +222,12 @@ class AgentAccessibilityService : AccessibilityService() {
         )
 
         for (index in 0 until node.childCount) {
-            collectNodes(node.getChild(index), depth + 1, output)
+            collectNodes(
+                node = node.getChild(index),
+                depth = depth + 1,
+                parentId = nodeId,
+                output = output,
+            )
         }
         return output
     }
@@ -230,10 +242,9 @@ class AgentAccessibilityService : AccessibilityService() {
     /**
      * 스냅샷에서 고른 그 입력창에 글자를 넣는다.
      *
-     * setTextOnFirstEditable로는 안 된다. 그건 포커스를 보고, 포커스가 없으면
-     * 화면의 첫 입력창으로 물러난다. 크롬의 웹 폼은 칸을 눌러도 접근성 포커스가
-     * 잡히지 않아서, 세 번 채운 값이 모두 첫 칸에 덮어써졌다(실측: 받는사람 칸에
-     * 우편번호가 들어가고 나머지는 비어 있었다).
+     * 포커스나 화면의 첫 입력창으로 물러나면 안 된다. 크롬의 웹 폼은 칸을
+     * 눌러도 접근성 포커스가 잡히지 않아, 여러 값을 입력하면 첫 칸에 계속
+     * 덮어쓸 수 있다(실측: 받는사람 칸에 우편번호가 들어가고 나머지는 비었다).
      *
      * 라벨로 찾을 수도 없다. 빈 입력창은 라벨이 hint에만 있거나 아예 없다.
      * 남는 단서는 위치다. 관찰 직후에 부르므로 화면이 그대로라는 건 이미
@@ -317,6 +328,31 @@ class AgentAccessibilityService : AccessibilityService() {
         )
     }
 
+    /** Prefer the widget's semantic scroll action over a synthetic gesture. */
+    fun scrollSnapshotNode(
+        target: UiNode,
+        expectedPackage: String,
+        direction: String,
+    ): Boolean {
+        val root = rootInActiveWindow ?: return false
+        if (root.packageName?.toString() != expectedPackage) return false
+        val nodes = mutableListOf<IndexedNativeNode>()
+        collectIndexedNativeNodes(root, nodes)
+        val match = nodes
+            .asSequence()
+            .filter { it.node.isVisibleToUser && it.node.isEnabled && it.node.isScrollable }
+            .maxByOrNull { boundsSimilarityScore(it.node, target.bounds) }
+            ?: return false
+        val bounds = Rect()
+        match.node.getBoundsInScreen(bounds)
+        if (bounds != target.bounds) return false
+        val action = when (direction) {
+            "down", "right" -> AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+            else -> AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+        }
+        return match.node.performAction(action)
+    }
+
     fun clickSnapshotNode(
         target: UiNode,
         expectedPackage: String,
@@ -388,32 +424,9 @@ class AgentAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * 지금 포커스된 입력창에 글자를 넣는다. 포커스가 없으면 첫 번째 입력창.
-     *
-     * "첫 번째 입력창"만 보면 칸이 여럿인 화면에서 엉뚱한 데로 들어간다. 로그인
-     * 화면이 대표적이다 — 비밀번호를 넣으려는데 아이디 칸이 첫 번째라 거기에
-     * 들어가고, 아이디가 화면에 그대로 노출된다. 개인정보를 다루려면 어느 칸에
-     * 넣는지가 분명해야 하므로 포커스를 먼저 본다.
-     */
-    fun setTextOnFirstEditable(text: String): Boolean {
-        val root = rootInActiveWindow ?: return false
-        val editable = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-            ?.takeIf { node -> node.isEditable && node.isEnabled }
-            ?: findFirstNode(root) { node -> node.isEditable && node.isEnabled }
-            ?: return false
-        val arguments = Bundle().apply {
-            putCharSequence(
-                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                text,
-            )
-        }
-        return editable.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-    }
-
-    /**
      * Sets text only on the exact editable node selected from the latest
-     * snapshot. Unlike setTextOnFirstEditable, this has no fallback to another
-     * field, which prevents a credential from landing in the wrong input.
+     * snapshot. It has no fallback to another field, which prevents a
+     * credential from landing in the wrong input.
      */
     fun setTextOnSnapshotNode(
         target: UiNode,
@@ -425,11 +438,15 @@ class AgentAccessibilityService : AccessibilityService() {
         val nodes = mutableListOf<IndexedNativeNode>()
         collectIndexedNativeNodes(root, nodes)
         val exact = nodes.firstOrNull { item ->
+            val currentBounds = Rect().apply {
+                item.node.getBoundsInScreen(this)
+            }
             item.id == target.id &&
                 item.node.isVisibleToUser &&
                 item.node.isEnabled &&
                 item.node.isEditable &&
                 item.node.isPassword == target.password &&
+                currentBounds == target.bounds &&
                 (
                     target.viewId.isNullOrBlank() ||
                         item.node.viewIdResourceName == target.viewId

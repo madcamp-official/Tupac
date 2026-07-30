@@ -9,7 +9,7 @@ import org.json.JSONObject
 /**
  * 시스템 버튼을 대신 누른다 (performGlobalAction).
  *
- * BackDeviceTool이 이미 GLOBAL_ACTION_BACK 하나를 감싸고 있었다. 접근성 서비스는
+ * GoBackDeviceTool이 이미 GLOBAL_ACTION_BACK 하나를 감싸고 있다. 접근성 서비스는
  * 그 밖에도 홈·최근 앱·알림창·빠른 설정을 같은 방식으로 누를 수 있는데, 쓰지
  * 않고 있었다. 권한은 이미 있다 — 부르기만 하면 된다.
  *
@@ -18,7 +18,7 @@ import org.json.JSONObject
  * 없었다. 빠른 설정 패널에는 그 토글들이 한 화면에 모여 있어서 훨씬 짧다.
  * 손전등·화면 회전·모바일 데이터처럼 설정 앱 상단에 없는 토글도 여기 있다.
  *
- * back은 BackDeviceTool로 이미 나가 있어 여기서 중복으로 내보내지 않는다.
+ * back은 GoBackDeviceTool로 이미 나가 있어 여기서 중복으로 내보내지 않는다.
  *
  * 여는 것까지가 이 tool의 일이다. 실제로 켜고 끄는 건 패널이 열린 뒤 평소대로
  * observe → tap 으로 한다.

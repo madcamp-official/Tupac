@@ -79,9 +79,11 @@ class GeminiOcrBenchmarkReceiver : BroadcastReceiver() {
             emptyList()
         }
 
-        val first = client.decideMeasured(
+        var apiMs = 0L
+        val firstApiStarted = SystemClock.elapsedRealtime()
+        val first = client.decide(
             apiKey = apiKey,
-            model = GeminiModel.LATEST_LITE,
+            model = GeminiModel.FLASH_LITE_3_1,
             request = request(
                 snapshot = snapshot,
                 screenWidth = display.widthPixels,
@@ -89,15 +91,17 @@ class GeminiOcrBenchmarkReceiver : BroadcastReceiver() {
                 screenElements = screenElements,
             ),
         )
+        apiMs += SystemClock.elapsedRealtime() - firstApiStarted
         var finalDecision = first
         var apiCalls = 1
         var visualUsed = false
         if (first.action.action == ACTION_REQUEST_VISUAL) {
             visualUsed = true
             apiCalls += 1
-            finalDecision = client.decideMeasured(
+            val visualApiStarted = SystemClock.elapsedRealtime()
+            finalDecision = client.decide(
                 apiKey = apiKey,
-                model = GeminiModel.LATEST_LITE,
+                model = GeminiModel.FLASH_LITE_3_1,
                 request = request(
                     snapshot = snapshot,
                     screenWidth = display.widthPixels,
@@ -110,6 +114,7 @@ class GeminiOcrBenchmarkReceiver : BroadcastReceiver() {
                     ),
                 ),
             )
+            apiMs += SystemClock.elapsedRealtime() - visualApiStarted
         }
 
         val decisions = if (apiCalls == 1) listOf(first) else listOf(first, finalDecision)
@@ -122,7 +127,7 @@ class GeminiOcrBenchmarkReceiver : BroadcastReceiver() {
             TAG,
             "mode=${mode.logName} success=true ocr_ms=$ocrMs " +
                 "elements=${screenElements.size} api_calls=$apiCalls " +
-                "visual_used=$visualUsed api_ms=${decisions.sumOf { it.latencyMs }} " +
+                "visual_used=$visualUsed api_ms=$apiMs " +
                 "request_bytes=${decisions.sumOf { it.requestBytes }} " +
                 "prompt_tokens=${decisions.sumNullable(GeminiMeasuredDecision::promptTokenCount)} " +
                 "total_tokens=${decisions.sumNullable(GeminiMeasuredDecision::totalTokenCount)} " +

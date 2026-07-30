@@ -13,49 +13,87 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.LinkedHashMap
 
-internal object LatestUiObservation {
-    @Volatile
-    var snapshot: UiSnapshot? = null
+/**
+ * Bounded snapshot registry. A run binds node actions to the exact observation
+ * fingerprint instead of trusting a process-global "latest" pointer that MCP,
+ * remote control, or another invocation may overwrite concurrently.
+ *
+ * Node-targeted tools never fall back to a latest pointer: callers must present
+ * the exact snapshot id they observed.
+ */
+internal object UiObservationStore {
+    private const val MAX_SNAPSHOTS = 32
+    private val snapshots = object : LinkedHashMap<String, UiSnapshot>(MAX_SNAPSHOTS, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, UiSnapshot>?,
+        ): Boolean = size > MAX_SNAPSHOTS
+    }
+
+    @Synchronized
+    fun remember(snapshot: UiSnapshot): String {
+        val id = snapshot.fingerprint.hash
+        snapshots[id] = snapshot
+        return id
+    }
+
+    @Synchronized
+    fun resolve(arguments: JSONObject): UiSnapshot? {
+        val snapshotId = arguments.optString("snapshot_id").trim()
+        return snapshotId.takeIf(String::isNotEmpty)?.let(snapshots::get)
+    }
 }
+
+internal fun rememberUiObservation(snapshot: UiSnapshot): String =
+    UiObservationStore.remember(snapshot)
 
 /**
  * Prevents a value inserted by [FillSecretDeviceTool] from re-entering a
  * model prompt or trace through the next accessibility observation.
  *
- * The executor keeps the original snapshot in [LatestUiObservation] for exact
- * node actions and stale-screen checks. Only the observation returned to model
- * adapters is copied and redacted.
+ * The executor keeps the redacted caller-visible snapshot in the bounded
+ * observation store so its fingerprint and node ids remain usable by exact
+ * follow-up actions without retaining the inserted value.
  */
 internal object SensitiveUiRedaction {
     private const val REDACTED_VALUE = "[LOCAL_VALUE_REDACTED]"
     private const val REDACTION_TTL_MS = 5 * 60 * 1_000L
 
     @Volatile
-    private var marker: Marker? = null
+    private var markers: List<Marker> = emptyList()
 
+    @Synchronized
     fun markFilledField(packageName: String, node: com.example.mobileguiagent.model.UiNode) {
-        marker = Marker(
+        val now = System.currentTimeMillis()
+        val next = Marker(
             packageName = packageName,
             nodeId = node.id,
             viewId = node.viewId.orEmpty(),
             bounds = android.graphics.Rect(node.bounds),
-            expiresAtMillis = System.currentTimeMillis() + REDACTION_TTL_MS,
+            expiresAtMillis = now + REDACTION_TTL_MS,
         )
+        markers = (
+            markers.filter { current ->
+                current.expiresAtMillis >= now &&
+                    current.packageName == packageName &&
+                    !current.sameField(next)
+            } + next
+            )
     }
 
+    @Synchronized
     fun redact(snapshot: UiSnapshot): UiSnapshot {
-        val current = marker ?: return snapshot
-        if (
-            current.expiresAtMillis < System.currentTimeMillis() ||
-            current.packageName != snapshot.packageName
-        ) {
-            marker = null
-            return snapshot
+        val now = System.currentTimeMillis()
+        val active = markers.filter { current ->
+            current.expiresAtMillis >= now &&
+                current.packageName == snapshot.packageName
         }
+        markers = active
+        if (active.isEmpty()) return snapshot
         return snapshot.copy(
             nodes = snapshot.nodes.map { node ->
-                if (current.matches(node)) {
+                if (active.any { current -> current.matches(node) }) {
                     node.copy(
                         text = REDACTED_VALUE,
                         contentDescription = node.contentDescription
@@ -76,6 +114,17 @@ internal object SensitiveUiRedaction {
         val bounds: android.graphics.Rect,
         val expiresAtMillis: Long,
     ) {
+        fun sameField(other: Marker): Boolean =
+            packageName == other.packageName &&
+                (
+                    (
+                        viewId.isNotBlank() &&
+                            other.viewId.isNotBlank() &&
+                            viewId == other.viewId
+                        ) ||
+                        (nodeId == other.nodeId && bounds == other.bounds)
+                    )
+
         fun matches(node: com.example.mobileguiagent.model.UiNode): Boolean {
             if (!node.editable) return false
             if (viewId.isNotBlank() && node.viewId == viewId) return true
@@ -101,6 +150,7 @@ object FillSecretDeviceTool : DeviceTool {
             "one-time user approval. Never accepts or returns the secret value.",
         inputSchema = objectSchema(
             properties = JSONObject()
+                .put("snapshot_id", snapshotIdSchema())
                 .put(
                     "node_id",
                     JSONObject()
@@ -113,7 +163,7 @@ object FillSecretDeviceTool : DeviceTool {
                         .put("type", "string")
                         .put("description", "Opaque approved local credential reference."),
                 ),
-            required = listOf("node_id", "secret_ref"),
+            required = listOf("snapshot_id", "node_id", "secret_ref"),
         ),
     )
 
@@ -132,7 +182,7 @@ object FillSecretDeviceTool : DeviceTool {
                 message = "node_id는 최신 observe_ui가 반환한 node_숫자 형식이어야 합니다.",
             )
         }
-        val snapshot = LatestUiObservation.snapshot
+        val snapshot = UiObservationStore.resolve(arguments)
             ?: return DeviceToolResult.Error(
                 code = "OBSERVE_UI_REQUIRED",
                 message = "fill_secret 전에 observe_ui를 실행해야 합니다.",
@@ -168,8 +218,7 @@ object FillSecretDeviceTool : DeviceTool {
                     val current = service.captureSnapshot()
                     if (
                         current == null ||
-                        current.packageName != snapshot.packageName ||
-                        current.fingerprint.hash != snapshot.fingerprint.hash
+                        current.packageName != snapshot.packageName
                     ) {
                         staleSnapshot.set(true)
                     } else {
@@ -180,6 +229,19 @@ object FillSecretDeviceTool : DeviceTool {
                                 text = characters,
                             ),
                         )
+                        // A WebView may refresh unrelated nodes between the
+                        // observation and credential dispatch. The native
+                        // setter revalidates the exact traversal id, package,
+                        // bounds, class, view id, editability, and password
+                        // role, so a changed full-screen fingerprint alone is
+                        // not grounds to reject the credential. If that exact
+                        // field no longer exists, require a fresh observation.
+                        if (
+                            !success.get() &&
+                            current.fingerprint.hash != snapshot.fingerprint.hash
+                        ) {
+                            staleSnapshot.set(true)
+                        }
                     }
                 } finally {
                     latch.countDown()
@@ -244,8 +306,12 @@ object ObserveUiDeviceTool : DeviceTool {
                 code = "UI_TREE_UNAVAILABLE",
                 message = "현재 화면의 UI Tree를 가져오지 못했습니다.",
             )
-        LatestUiObservation.snapshot = snapshot
-        return DeviceToolResult.UiObservation(SensitiveUiRedaction.redact(snapshot))
+        val safeSnapshot = SensitiveUiRedaction.redact(snapshot)
+        // Redaction changes the snapshot fingerprint. Resolve subsequent
+        // node-targeted calls against the same safe snapshot id returned to
+        // the caller, not against a hidden raw variant.
+        rememberUiObservation(safeSnapshot)
+        return DeviceToolResult.UiObservation(safeSnapshot)
     }
 }
 
@@ -356,6 +422,7 @@ object TapNodeDeviceTool : DeviceTool {
             "Prefer this over coordinate tap when the target node is available.",
         inputSchema = objectSchema(
             properties = JSONObject()
+                .put("snapshot_id", snapshotIdSchema())
                 .put(
                     "node_id",
                     JSONObject()
@@ -372,7 +439,7 @@ object TapNodeDeviceTool : DeviceTool {
                             "Internally retry the unchanged exact node at its bounds center.",
                         ),
                 ),
-            required = listOf("node_id"),
+            required = listOf("snapshot_id", "node_id"),
         ),
     )
 
@@ -385,7 +452,7 @@ object TapNodeDeviceTool : DeviceTool {
                 message = "tap_node에는 node_id가 필요합니다.",
             )
         }
-        val snapshot = LatestUiObservation.snapshot
+        val snapshot = UiObservationStore.resolve(arguments)
             ?: return DeviceToolResult.Error(
                 code = "OBSERVE_UI_REQUIRED",
                 message = "tap_node 전에 observe_ui를 실행해야 합니다.",
@@ -423,42 +490,109 @@ object TapNodeDeviceTool : DeviceTool {
             // while the requested control remains stable. clickSnapshotNode
             // re-resolves the old target against the current native tree using
             // its exact label, view id, class, and nearby bounds.
-            if (!coordinateFallback) {
-                val nodeAction = service.clickSnapshotNode(target, snapshot.packageName)
-                if (nodeAction.success) {
-                    if (treeChanged) method.set("node_click_after_refresh")
-                    success.set(true)
-                    latch.countDown()
-                    return@post
-                }
+            val nodeAction = service.clickSnapshotNode(target, snapshot.packageName)
+            if (nodeAction.success && !coordinateFallback) {
+                if (treeChanged) method.set("node_click_after_refresh")
+                success.set(true)
+                latch.countDown()
+                return@post
             }
 
-            // A label-less/custom view may be present in the accessibility
-            // snapshot but reject ACTION_CLICK. Coordinate fallback is safe
-            // only when the complete screen still matches the observation.
+            // A label-less/custom view may reject ACTION_CLICK even though it
+            // remains the same visible control. Dynamic banners can change the
+            // full fingerprint, so validate the target itself against the
+            // refreshed tree instead of rejecting every coordinate fallback.
+            val coordinateTarget = if (!treeChanged) {
+                target
+            } else {
+                current.nodes
+                    .asSequence()
+                    .filter { candidate ->
+                        candidate.visibleToUser &&
+                            candidate.enabled &&
+                            candidate.className == target.className &&
+                            target.viewId?.takeIf(String::isNotBlank)?.let { viewId ->
+                                candidate.viewId == viewId
+                            } == true
+                    }
+                    .minByOrNull { candidate ->
+                        val dx = candidate.bounds.exactCenterX() - target.bounds.exactCenterX()
+                        val dy = candidate.bounds.exactCenterY() - target.bounds.exactCenterY()
+                        dx * dx + dy * dy
+                    }
+                    ?.takeIf { candidate ->
+                        val centerDx = kotlin.math.abs(
+                            candidate.bounds.exactCenterX() - target.bounds.exactCenterX(),
+                        )
+                        val centerDy = kotlin.math.abs(
+                            candidate.bounds.exactCenterY() - target.bounds.exactCenterY(),
+                        )
+                        centerDx <= TARGET_REFRESH_MAX_CENTER_DELTA_PX &&
+                            centerDy <= TARGET_REFRESH_MAX_CENTER_DELTA_PX
+                    }
+            }
             if (
-                treeChanged ||
-                target.bounds.width() <= 0 ||
-                target.bounds.height() <= 0
+                coordinateTarget == null ||
+                coordinateTarget.bounds.width() <= 0 ||
+                coordinateTarget.bounds.height() <= 0
             ) {
                 latch.countDown()
                 return@post
             }
-            service.tap(
-                target.bounds.exactCenterX(),
-                target.bounds.exactCenterY(),
-            ) { tapped ->
-                success.set(tapped)
-                if (tapped) {
-                    method.set(
-                        if (coordinateFallback) {
-                            "verified_node_coordinate_retry"
-                        } else {
-                            "coordinate_tap"
-                        },
-                    )
+            val performCoordinateTap = {
+                service.tap(
+                    coordinateTarget.bounds.exactCenterX(),
+                    coordinateTarget.bounds.exactCenterY(),
+                ) { tapped ->
+                    success.set(tapped)
+                    if (tapped) {
+                        method.set(
+                            if (treeChanged) {
+                                if (nodeAction.success) {
+                                    "node_click_then_verified_coordinate_retry_after_refresh"
+                                } else {
+                                    "verified_node_coordinate_retry_after_refresh"
+                                }
+                            } else if (coordinateFallback && nodeAction.success) {
+                                "node_click_then_verified_coordinate_retry"
+                            } else if (coordinateFallback) {
+                                "verified_node_coordinate_retry"
+                            } else {
+                                "coordinate_tap"
+                            },
+                        )
+                    }
+                    latch.countDown()
                 }
-                latch.countDown()
+            }
+            if (nodeAction.success && coordinateFallback) {
+                // ACTION_CLICK can either activate a WebView control or merely
+                // focus it. Retrying the coordinate immediately is unsafe for
+                // toggle-like controls such as cinema seats: a real first
+                // click selects the seat and the unconditional second click
+                // deselects it. Give the DOM one frame to expose its state
+                // change and retry only when the screen is still unchanged.
+                Handler(Looper.getMainLooper()).postDelayed(
+                    {
+                        val afterNodeAction = service.captureSnapshot()
+                        if (
+                            afterNodeAction != null &&
+                            (
+                                afterNodeAction.packageName != current.packageName ||
+                                    afterNodeAction.fingerprint.hash != current.fingerprint.hash
+                                )
+                        ) {
+                            success.set(true)
+                            method.set("node_click_verified_change")
+                            latch.countDown()
+                        } else {
+                            performCoordinateTap()
+                        }
+                    },
+                    NODE_ACTION_VERIFY_DELAY_MS,
+                )
+            } else {
+                performCoordinateTap()
             }
         }
         if (!latch.await(ACTION_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
@@ -488,21 +622,159 @@ object TapNodeDeviceTool : DeviceTool {
     }
 }
 
+/**
+ * Opens one semantic selector and chooses an exact visible option.
+ *
+ * WebView select controls are often exposed as a clickable prompt instead of
+ * Android's Spinner class. The selector check therefore accepts explicit
+ * dropdown roles as well as visible "option/select" prompts, while still
+ * rejecting ordinary editable text fields.
+ */
+object SelectOptionDeviceTool : DeviceTool {
+    const val NAME = "select_option"
+
+    override val definition = DeviceToolDefinition(
+        name = NAME,
+        description = "Opens one visible selector and chooses an exact option label. " +
+            "Use this for sizes, colors, dropdowns, radio-style option sheets, and spinners.",
+        inputSchema = objectSchema(
+            properties = JSONObject()
+                .put("snapshot_id", snapshotIdSchema())
+                .put("node_id", JSONObject().put("type", "string"))
+                .put("option", JSONObject().put("type", "string")),
+            required = listOf("snapshot_id", "node_id", "option"),
+        ),
+    )
+
+    override fun execute(arguments: JSONObject): DeviceToolResult {
+        val nodeId = arguments.optString("node_id").trim()
+        val option = arguments.optString("option").trim()
+        if (nodeId.isEmpty() || option.isEmpty()) {
+            return DeviceToolResult.Error(
+                code = "MISSING_OPTION_ARGUMENT",
+                message = "select_option에는 node_id와 option이 필요합니다.",
+            )
+        }
+        val snapshot = UiObservationStore.resolve(arguments)
+            ?: return DeviceToolResult.Error(
+                code = "OBSERVE_UI_REQUIRED",
+                message = "select_option 전에 observe_ui를 실행해야 합니다.",
+            )
+        val selector = snapshot.nodes.firstOrNull { it.id == nodeId }
+            ?: return DeviceToolResult.Error(
+                code = "NODE_NOT_FOUND",
+                message = "최근 UI Tree에 $nodeId 노드가 없습니다.",
+            )
+        if (!selector.enabled || !selector.visibleToUser || !selector.isSemanticSelector()) {
+            return DeviceToolResult.Error(
+                code = "NOT_A_SELECTOR",
+                message = "현재 보이는 옵션 선택 컨트롤만 사용할 수 있습니다.",
+            )
+        }
+        val service = activeServiceOrError() ?: return accessibilityNotConnected()
+        val opened = TapNodeDeviceTool.execute(
+            JSONObject(arguments.toString()).put("coordinate_fallback", true),
+        )
+        if (opened is DeviceToolResult.Error) return opened
+        if (opened is DeviceToolResult.Action && !opened.success) {
+            return DeviceToolResult.Error(
+                code = "OPEN_SELECTOR_FAILED",
+                message = "옵션 선택 컨트롤을 열지 못했습니다.",
+            )
+        }
+
+        val options = waitForExactVisibleOption(service, option)
+            ?: return DeviceToolResult.Error(
+                code = "OPTION_NOT_FOUND",
+                message = "열린 선택 화면에서 정확한 옵션을 찾지 못했습니다: $option",
+            )
+        rememberUiObservation(options.first)
+        val selected = TapNodeDeviceTool.execute(
+            JSONObject()
+                .put("snapshot_id", options.first.fingerprint.hash)
+                .put("node_id", options.second.id)
+                .put("coordinate_fallback", true),
+        )
+        if (selected is DeviceToolResult.Error) return selected
+        if (selected is DeviceToolResult.Action && !selected.success) {
+            return DeviceToolResult.Error(
+                code = "SELECT_OPTION_FAILED",
+                message = "옵션 $option 항목을 누르지 못했습니다.",
+            )
+        }
+        return DeviceToolResult.Action(
+            action = NAME,
+            success = true,
+            message = "요청한 옵션을 선택했습니다. value=$option",
+        )
+    }
+
+    private fun waitForExactVisibleOption(
+        service: AgentAccessibilityService,
+        option: String,
+    ): Pair<UiSnapshot, com.example.mobileguiagent.model.UiNode>? {
+        repeat(OPTION_OBSERVE_ATTEMPTS) {
+            Thread.sleep(OPTION_OBSERVE_INTERVAL_MS)
+            val snapshot = captureSnapshotBlocking(service) ?: return@repeat
+            val match = snapshot.nodes.firstOrNull { node ->
+                node.visibleToUser &&
+                    node.enabled &&
+                    listOfNotNull(node.text, node.contentDescription, node.hint)
+                        .any { it.trim().equals(option, ignoreCase = true) }
+            }
+            if (match != null) return snapshot to match
+        }
+        return null
+    }
+
+    private fun com.example.mobileguiagent.model.UiNode.isSemanticSelector(): Boolean {
+        val widget = className.orEmpty().lowercase()
+        val role = roleDescription.orEmpty().lowercase()
+        val label = listOfNotNull(text, contentDescription, hint)
+            .joinToString(" ")
+            .lowercase()
+        return widget.contains("spinner") ||
+            widget.contains("autocompletetextview") ||
+            (widget.contains("edittext") && clickable && !editable) ||
+            role.contains("dropdown") ||
+            role.contains("drop-down") ||
+            role.contains("combo") ||
+            role.contains("menu popup") ||
+            label.contains("dropdown") ||
+            label.contains("드롭다운") ||
+            (clickable && (label.contains("옵션") || label.contains("선택")))
+    }
+
+    private const val OPTION_OBSERVE_ATTEMPTS = 8
+    private const val OPTION_OBSERVE_INTERVAL_MS = 200L
+}
+
 object SetTextDeviceTool : DeviceTool {
     const val NAME = "set_text"
 
     override val definition = DeviceToolDefinition(
         name = NAME,
-        description = "Replaces the text in the currently visible editable field. " +
-            "Use it after opening an app-drawer search field or another text input.",
+        description = "Replaces text in one exact editable node from an observation. " +
+            "It never falls back to a different focused or first input field.",
         inputSchema = objectSchema(
-            properties = JSONObject().put(
-                "text",
-                JSONObject()
-                    .put("type", "string")
-                    .put("description", "Exact text to enter, in the user's language."),
-            ),
-            required = listOf("text"),
+            properties = JSONObject()
+                .put("snapshot_id", snapshotIdSchema())
+                .put(
+                    "node_id",
+                    JSONObject()
+                        .put("type", "string")
+                        .put(
+                            "description",
+                            "Exact editable node id from the same observation.",
+                        ),
+                )
+                .put(
+                    "text",
+                    JSONObject()
+                        .put("type", "string")
+                        .put("description", "Exact text to enter, in the user's language."),
+                ),
+            required = listOf("snapshot_id", "node_id", "text"),
         ),
     )
 
@@ -514,11 +786,50 @@ object SetTextDeviceTool : DeviceTool {
                 message = "set_text에는 입력할 text가 필요합니다.",
             )
         }
+        val nodeId = arguments.optString("node_id").trim()
+        if (!NODE_ID_PATTERN.matches(nodeId)) {
+            return DeviceToolResult.Error(
+                code = "INVALID_NODE_ID",
+                message = "set_text에는 최신 관찰의 node_숫자 형식 node_id가 필요합니다.",
+            )
+        }
+        val snapshot = UiObservationStore.resolve(arguments)
+            ?: return DeviceToolResult.Error(
+                code = "OBSERVE_UI_REQUIRED",
+                message = "set_text 전에 observe_ui를 실행하고 snapshot_id를 전달해야 합니다.",
+            )
+        val target = snapshot.nodes.firstOrNull { node -> node.id == nodeId }
+            ?: return DeviceToolResult.Error(
+                code = "NODE_NOT_FOUND",
+                message = "해당 snapshot에 요청한 입력 노드가 없습니다.",
+            )
+        if (!target.visibleToUser || !target.enabled || !target.editable) {
+            return DeviceToolResult.Error(
+                code = "NODE_NOT_EDITABLE",
+                message = "현재 보이는 활성 입력 노드만 텍스트를 받을 수 있습니다.",
+            )
+        }
         val service = activeServiceOrError() ?: return accessibilityNotConnected()
         val success = AtomicBoolean(false)
+        val staleSnapshot = AtomicBoolean(false)
         val latch = CountDownLatch(1)
         Handler(Looper.getMainLooper()).post {
-            success.set(service.setTextOnFirstEditable(text))
+            val current = service.captureSnapshot()
+            if (
+                current == null ||
+                current.packageName != snapshot.packageName ||
+                current.fingerprint.hash != snapshot.fingerprint.hash
+            ) {
+                staleSnapshot.set(true)
+            } else {
+                success.set(
+                    service.setTextOnSnapshotNode(
+                        target = target,
+                        expectedPackage = snapshot.packageName,
+                        text = text,
+                    ),
+                )
+            }
             latch.countDown()
         }
         if (!latch.await(ACTION_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
@@ -527,13 +838,19 @@ object SetTextDeviceTool : DeviceTool {
                 message = "set_text 실행 응답 시간이 초과됐습니다.",
             )
         }
+        if (staleSnapshot.get()) {
+            return DeviceToolResult.Error(
+                code = "SCREEN_CHANGED",
+                message = "관찰 후 화면이 바뀌어 텍스트 입력을 거부했습니다.",
+            )
+        }
         return DeviceToolResult.Action(
             action = NAME,
             success = success.get(),
             message = if (success.get()) {
                 "입력창에 \"$text\"를 입력했습니다."
             } else {
-                "현재 화면에서 입력 가능한 검색창을 찾지 못했습니다."
+                "$nodeId 입력 노드에 텍스트를 넣지 못했습니다."
             },
         )
     }
@@ -582,9 +899,11 @@ object TapDeviceTool : DeviceTool {
     override val definition = DeviceToolDefinition(
         name = NAME,
         description = "Taps one absolute screen coordinate. Coordinates must come from the " +
-            "latest screenshot or UI bounds. Origin (0,0) is the top-left of the screen.",
+            "latest screenshot or UI bounds. Origin (0,0) is the top-left of the screen. " +
+            "When snapshot_id is supplied, the tap is rejected if that observed screen changed.",
         inputSchema = objectSchema(
             properties = JSONObject()
+                .put("snapshot_id", snapshotIdSchema())
                 .put("x", coordinateSchema("Horizontal screen coordinate in pixels."))
                 .put("y", coordinateSchema("Vertical screen coordinate in pixels.")),
             required = listOf("x", "y"),
@@ -594,6 +913,15 @@ object TapDeviceTool : DeviceTool {
     override fun execute(arguments: JSONObject): DeviceToolResult {
         val x = arguments.requiredCoordinate("x") ?: return invalidCoordinate("x")
         val y = arguments.requiredCoordinate("y") ?: return invalidCoordinate("y")
+        val expectedSnapshot = if (arguments.has("snapshot_id")) {
+            UiObservationStore.resolve(arguments)
+                ?: return DeviceToolResult.Error(
+                    code = "OBSERVE_UI_REQUIRED",
+                    message = "좌표 탭에 전달한 snapshot_id를 찾을 수 없습니다. 다시 관찰해 주세요.",
+                )
+        } else {
+            null
+        }
         val service = activeServiceOrError() ?: return accessibilityNotConnected()
         val display = service.resources.displayMetrics
         if (
@@ -605,6 +933,16 @@ object TapDeviceTool : DeviceTool {
                 message = "탭 좌표가 현재 화면 범위를 벗어났습니다: ($x, $y), " +
                     "screen=${display.widthPixels}x${display.heightPixels}",
             )
+        }
+        if (expectedSnapshot != null) {
+            return runSnapshotBoundBooleanAction(
+                name = NAME,
+                successMessage = "화면 좌표 ($x, $y)를 탭했습니다.",
+                expectedSnapshot = expectedSnapshot,
+                service = service,
+            ) { complete ->
+                service.tap(x, y, complete)
+            }
         }
         return runBooleanAction(NAME, "화면 좌표 ($x, $y)를 탭했습니다.") { complete ->
             service.tap(x, y, complete)
@@ -681,34 +1019,6 @@ object SwipeDeviceTool : DeviceTool {
     }
 }
 
-object FinishDeviceTool : DeviceTool {
-    const val NAME = "finish"
-
-    override val definition = DeviceToolDefinition(
-        name = NAME,
-        description = "Ends the agent loop only when the user's goal is complete or cannot be " +
-            "completed safely. Include a short user-facing message.",
-        inputSchema = objectSchema(
-            properties = JSONObject().put(
-                "message",
-                JSONObject()
-                    .put("type", "string")
-                    .put("description", "Concise result message in the user's language."),
-            ),
-            required = listOf("message"),
-        ),
-    )
-
-    override fun execute(arguments: JSONObject): DeviceToolResult =
-        DeviceToolResult.Action(
-            action = NAME,
-            success = true,
-            message = arguments.optString("message")
-                .trim()
-                .ifBlank { "작업을 마쳤습니다." },
-        )
-}
-
 private fun runBooleanAction(
     name: String,
     successMessage: String,
@@ -740,8 +1050,98 @@ private fun runBooleanAction(
     )
 }
 
+/**
+ * Validates and dispatches a coordinate gesture in one main-looper turn.
+ *
+ * Keeping the capture and gesture submission together closes the stale-action
+ * window where a planner could observe a loading screen, spend seconds
+ * deciding, and then tap the fully loaded replacement screen at the old
+ * coordinate.
+ */
+private fun runSnapshotBoundBooleanAction(
+    name: String,
+    successMessage: String,
+    expectedSnapshot: UiSnapshot,
+    service: AgentAccessibilityService,
+    startOnMainThread: ((Boolean) -> Unit) -> Unit,
+): DeviceToolResult {
+    val result = AtomicBoolean(false)
+    val staleSnapshot = AtomicBoolean(false)
+    val latch = CountDownLatch(1)
+    Handler(Looper.getMainLooper()).post {
+        runCatching {
+            val current = service.captureSnapshot()
+            if (!coordinateSnapshotIsFresh(expectedSnapshot, current)) {
+                staleSnapshot.set(true)
+                latch.countDown()
+                return@post
+            }
+            startOnMainThread { success ->
+                result.set(success)
+                latch.countDown()
+            }
+        }.onFailure {
+            latch.countDown()
+        }
+    }
+    if (!latch.await(ACTION_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+        return DeviceToolResult.Error(
+            code = "ACTION_TIMEOUT",
+            message = "$name 실행 응답 시간이 초과됐습니다.",
+        )
+    }
+    if (staleSnapshot.get()) {
+        return DeviceToolResult.Error(
+            code = "SCREEN_CHANGED",
+            message = "관찰 후 화면이 바뀌어 오래된 좌표 탭을 거부했습니다. 다시 관찰해 주세요.",
+        )
+    }
+    val success = result.get()
+    return DeviceToolResult.Action(
+        action = name,
+        success = success,
+        message = if (success) successMessage else "$name 실행이 취소되거나 실패했습니다.",
+    )
+}
+
+internal fun coordinateSnapshotIsFresh(
+    expectedSnapshot: UiSnapshot,
+    currentSnapshot: UiSnapshot?,
+): Boolean {
+    if (
+        currentSnapshot == null ||
+        currentSnapshot.packageName != expectedSnapshot.packageName
+    ) {
+        return false
+    }
+    if (currentSnapshot.fingerprint.hash == expectedSnapshot.fingerprint.hash) {
+        return true
+    }
+    // observe_ui stores a caller-visible redacted snapshot after local secret
+    // filling, while MCP/remote observers may store the raw snapshot. Accept
+    // either exact representation of the same current screen.
+    val safeCurrent = SensitiveUiRedaction.redact(currentSnapshot)
+    return safeCurrent.fingerprint.hash == expectedSnapshot.fingerprint.hash
+}
+
 private fun activeServiceOrError(): AgentAccessibilityService? =
     AgentAccessibilityService.activeService
+
+private fun captureSnapshotBlocking(
+    service: AgentAccessibilityService,
+): UiSnapshot? {
+    val result = AtomicReference<UiSnapshot?>()
+    val latch = CountDownLatch(1)
+    Handler(Looper.getMainLooper()).post {
+        result.set(service.captureSnapshot())
+        latch.countDown()
+    }
+    return if (latch.await(ACTION_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+        result.get()
+    } else {
+        null
+    }
+}
 
 private fun accessibilityNotConnected() = DeviceToolResult.Error(
     code = "ACCESSIBILITY_NOT_CONNECTED",
@@ -778,6 +1178,13 @@ private fun coordinateSchema(description: String): JSONObject = JSONObject()
     .put("maximum", MAX_COORDINATE)
     .put("description", description)
 
+internal fun snapshotIdSchema(): JSONObject = JSONObject()
+    .put("type", "string")
+    .put(
+        "description",
+        "Exact snapshot_id returned by the observation that supplied this node.",
+    )
+
 private fun emptyObjectSchema(): JSONObject = objectSchema(JSONObject())
 
 private fun objectSchema(
@@ -795,4 +1202,6 @@ private fun objectSchema(
 
 private const val MAX_COORDINATE = 10_000.0
 private const val ACTION_TIMEOUT_MS = 8_000L
+private const val NODE_ACTION_VERIFY_DELAY_MS = 200L
+private const val TARGET_REFRESH_MAX_CENTER_DELTA_PX = 48f
 private val NODE_ID_PATTERN = Regex("""^node_\d+$""")

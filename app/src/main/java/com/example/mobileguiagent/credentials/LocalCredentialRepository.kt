@@ -1,32 +1,49 @@
 package com.example.mobileguiagent.credentials
 
 import android.content.Context
-import android.os.SystemClock
 import androidx.core.content.edit
+import com.example.mobileguiagent.secret.SecretVault
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.MessageDigest
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Local resolver and one-time authorization broker.
+ * Local, package-bound credential resolver.
  *
  * Gemini/local LLMs handle only opaque IDs. This class alone resolves an ID to
- * an encrypted value, and only after package, field-role and user-approval
- * checks have succeeded.
+ * an encrypted value, and only after package and field-role checks succeed.
+ * Persisting a credential for an app is the user's authorization to use it for
+ * that app's structurally verified authentication form.
  */
 object LocalCredentialRepository {
     private const val METADATA_PREFERENCES = "credential_metadata_v1"
     private const val RECORDS_KEY = "records"
-    private const val APPROVAL_TTL_MS = 5 * 60 * 1_000L
-
-    private val approvals = ConcurrentHashMap<String, Approval>()
 
     fun list(context: Context): List<LocalCredentialRecord> =
         readRecords(context.applicationContext)
 
-    fun publicCatalog(context: Context): List<PublicCredentialDescriptor> =
-        list(context).map(LocalCredentialRecord::descriptor)
+    /**
+     * Private planners may discover credentials for the exact foreground
+     * package locally even when the cloud shortlist did not select them.
+     * Only opaque descriptors are returned; values stay in Android Keystore.
+     */
+    fun publicCatalogForPackage(
+        context: Context,
+        packageName: String,
+    ): List<PublicCredentialDescriptor> {
+        val appContext = context.applicationContext
+        val repositoryRecords = readRecords(appContext)
+            .filter { record -> record.allowedPackage == packageName }
+            .map(LocalCredentialRecord::descriptor)
+        val vaultRecords = secretVaultDescriptors(appContext)
+            .filter { descriptor ->
+                resolveSecretVaultDescriptor(appContext, descriptor.id)
+                    ?.packageName == packageName
+            }
+        return (repositoryRecords + vaultRecords)
+            .distinctBy(PublicCredentialDescriptor::id)
+    }
 
     fun save(
         context: Context,
@@ -61,23 +78,7 @@ object LocalCredentialRepository {
             appContext,
             readRecords(appContext).filterNot { it.descriptor.id == id },
         )
-        approvals.remove(id)
         AndroidKeystoreSecretStore(appContext).remove(id)
-    }
-
-    /**
-     * Explicit UI approval. It is package-bound, expires quickly, and is
-     * consumed by the first fill attempt whether that attempt succeeds or not.
-     */
-    fun grantOneTimeUse(context: Context, id: String): Boolean {
-        val record = readRecords(context.applicationContext)
-            .firstOrNull { it.descriptor.id == id }
-            ?: return false
-        approvals[id] = Approval(
-            allowedPackage = record.allowedPackage,
-            expiresAtElapsedMs = SystemClock.elapsedRealtime() + APPROVAL_TTL_MS,
-        )
-        return true
     }
 
     fun accessSecret(
@@ -87,6 +88,14 @@ object LocalCredentialRepository {
         targetIsPassword: Boolean,
     ): SecretAccessResult {
         val appContext = context.applicationContext
+        if (id.startsWith(SECRET_VAULT_REFERENCE_PREFIX)) {
+            return accessSecretVaultValue(
+                context = appContext,
+                id = id,
+                foregroundPackage = foregroundPackage,
+                targetIsPassword = targetIsPassword,
+            )
+        }
         val record = readRecords(appContext)
             .firstOrNull { it.descriptor.id == id }
             ?: return SecretAccessResult.Denied(
@@ -116,20 +125,6 @@ object LocalCredentialRepository {
                 )
             }
         }
-        val approval = approvals.remove(id)
-            ?: return SecretAccessResult.Denied(
-                "SECRET_APPROVAL_REQUIRED",
-                "앱의 보안 저장소에서 이 값의 다음 1회 사용을 먼저 허용하세요.",
-            )
-        if (
-            approval.allowedPackage != foregroundPackage ||
-            approval.expiresAtElapsedMs < SystemClock.elapsedRealtime()
-        ) {
-            return SecretAccessResult.Denied(
-                "SECRET_APPROVAL_EXPIRED",
-                "1회 사용 승인이 만료되었거나 현재 앱과 일치하지 않습니다.",
-            )
-        }
         val characters = AndroidKeystoreSecretStore(appContext).get(id)
             ?: return SecretAccessResult.Denied(
                 "SECRET_DECRYPT_FAILED",
@@ -138,8 +133,84 @@ object LocalCredentialRepository {
         return SecretAccessResult.Ready(characters)
     }
 
-    internal fun clearApprovalsForTest() {
-        approvals.clear()
+    private fun accessSecretVaultValue(
+        context: Context,
+        id: String,
+        foregroundPackage: String,
+        targetIsPassword: Boolean,
+    ): SecretAccessResult {
+        val resolved = resolveSecretVaultDescriptor(context, id)
+            ?: return SecretAccessResult.Denied(
+                "UNKNOWN_SECRET_REF",
+                "등록되지 않은 credential reference입니다.",
+            )
+        if (resolved.packageName != foregroundPackage) {
+            return SecretAccessResult.Denied(
+                "SECRET_PACKAGE_DENIED",
+                "이 credential reference는 현재 앱에서 사용할 수 없습니다.",
+            )
+        }
+        val expectedPassword = resolved.field == "password"
+        if (expectedPassword != targetIsPassword) {
+            return SecretAccessResult.Denied(
+                "SECRET_FIELD_MISMATCH",
+                "저장된 자격증명의 역할과 현재 입력란이 일치하지 않습니다.",
+            )
+        }
+        val value = SecretVault.reveal(
+            context = context,
+            field = resolved.field,
+            service = resolved.packageName,
+        ) ?: return SecretAccessResult.Denied(
+            "SECRET_DECRYPT_FAILED",
+                "로컬 보안 저장소의 값을 복호화하지 못했습니다.",
+            )
+        return SecretAccessResult.Ready(value.toCharArray())
+    }
+
+    private fun secretVaultDescriptors(
+        context: Context,
+    ): List<PublicCredentialDescriptor> =
+        SecretVault.storedServices(context).flatMap { packageName ->
+            val scopeAlias = applicationLabel(context, packageName)
+            SecretVault.storedAccountFields(context, packageName).mapNotNull { field ->
+                val role = when (field) {
+                    "username" -> CredentialFieldRole.USERNAME
+                    "password" -> CredentialFieldRole.PASSWORD
+                    else -> null
+                } ?: return@mapNotNull null
+                PublicCredentialDescriptor(
+                    id = secretVaultReference(packageName, field),
+                    scopeAlias = scopeAlias,
+                    role = role,
+                )
+            }
+        }
+
+    private fun resolveSecretVaultDescriptor(
+        context: Context,
+        id: String,
+    ): SecretVaultDescriptor? {
+        if (!id.startsWith(SECRET_VAULT_REFERENCE_PREFIX)) return null
+        return SecretVault.storedServices(context).firstNotNullOfOrNull { packageName ->
+            SecretVault.storedAccountFields(context, packageName)
+                .firstOrNull { field -> secretVaultReference(packageName, field) == id }
+                ?.let { field -> SecretVaultDescriptor(packageName, field) }
+        }
+    }
+
+    private fun applicationLabel(context: Context, packageName: String): String =
+        runCatching {
+            val applicationInfo = context.packageManager.getApplicationInfo(packageName, 0)
+            context.packageManager.getApplicationLabel(applicationInfo).toString()
+        }.getOrDefault(packageName)
+
+    private fun secretVaultReference(packageName: String, field: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("$packageName\u0000$field".toByteArray())
+            .take(8)
+            .joinToString("") { byte -> "%02X".format(byte.toInt() and 0xff) }
+        return "$SECRET_VAULT_REFERENCE_PREFIX$digest"
     }
 
     private fun readRecords(context: Context): List<LocalCredentialRecord> {
@@ -191,12 +262,13 @@ object LocalCredentialRepository {
             }
     }
 
-    private data class Approval(
-        val allowedPackage: String,
-        val expiresAtElapsedMs: Long,
+    private data class SecretVaultDescriptor(
+        val packageName: String,
+        val field: String,
     )
 
     private val PACKAGE_PATTERN =
         Regex("""^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$""")
     private const val MAX_ALIAS_LENGTH = 48
+    private const val SECRET_VAULT_REFERENCE_PREFIX = "SV_"
 }

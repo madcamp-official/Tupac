@@ -30,8 +30,8 @@ import com.example.mobileguiagent.credentials.LocalCredentialRepository
 /**
  * Minimal local-only credential manager for the PoC.
  *
- * Values are never rendered after saving. "다음 1회 허용" creates a short-lived,
- * package-bound capability consumed by fill_secret.
+ * Values are never rendered after saving. A stored credential can only be
+ * resolved for its bound package and matching field role.
  */
 @Composable
 fun CredentialVaultDialog(onDismiss: () -> Unit) {
@@ -53,7 +53,7 @@ fun CredentialVaultDialog(onDismiss: () -> Unit) {
             ) {
                 item {
                     Text(
-                        "Gemini와 로컬 모델에는 아래 값이 아니라 불투명 ID와 역할만 " +
+                        "Gemini에는 아래 값이 아니라 불투명 ID와 역할만 " +
                             "전달됩니다. 패키지명과 실제 값은 기기에만 남습니다.",
                         style = MaterialTheme.typography.bodySmall,
                     )
@@ -166,35 +166,17 @@ fun CredentialVaultDialog(onDismiss: () -> Unit) {
                                 record.allowedPackage,
                                 style = MaterialTheme.typography.labelSmall,
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(
-                                    onClick = {
-                                        val granted =
-                                            LocalCredentialRepository.grantOneTimeUse(
-                                                context,
-                                                record.descriptor.id,
-                                            )
-                                        message = if (granted) {
-                                            "5분 안의 다음 1회 로컬 입력을 허용했습니다."
-                                        } else {
-                                            "승인하지 못했습니다."
-                                        }
-                                    },
-                                ) {
-                                    Text("다음 1회 허용")
-                                }
-                                TextButton(
-                                    onClick = {
-                                        LocalCredentialRepository.delete(
-                                            context,
-                                            record.descriptor.id,
-                                        )
-                                        message = "로컬 저장값을 삭제했습니다."
-                                        revision += 1
-                                    },
-                                ) {
-                                    Text("삭제")
-                                }
+                            TextButton(
+                                onClick = {
+                                    LocalCredentialRepository.delete(
+                                        context,
+                                        record.descriptor.id,
+                                    )
+                                    message = "로컬 저장값을 삭제했습니다."
+                                    revision += 1
+                                },
+                            ) {
+                                Text("삭제")
                             }
                         }
                     }

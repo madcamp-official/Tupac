@@ -4,12 +4,19 @@ import android.os.Handler
 import android.os.Looper
 import com.example.mobileguiagent.accessibility.AgentAccessibilityService
 import com.example.mobileguiagent.device.DeviceToolRegistry
+import com.example.mobileguiagent.device.rememberUiObservation
 import com.example.mobileguiagent.model.NodeActionResult
 import com.example.mobileguiagent.model.LocalChatRepository
 import com.example.mobileguiagent.secret.SecretVault
 import com.example.mobileguiagent.model.UiNode
 import com.example.mobileguiagent.model.UiSnapshot
 import com.example.mobileguiagent.model.isMeaningfulForAgent
+import com.example.mobileguiagent.remote.RemoteCommandPolicy
+import com.example.mobileguiagent.remote.RemoteObservationRedactor
+import com.example.mobileguiagent.remote.RemotePolicyDecision
+import com.example.mobileguiagent.remote.RemotePolicyRequest
+import com.example.mobileguiagent.remote.RemoteToolCatalog
+import com.example.mobileguiagent.remote.RemoteToolScope
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -218,7 +225,7 @@ class PocketMcpHttpServer(
             )
     }
 
-    private fun toolsListResult(): JSONObject = JSONObject().put(
+    internal fun toolsListResult(): JSONObject = JSONObject().put(
         "tools",
         JSONArray()
             .put(
@@ -250,10 +257,7 @@ class PocketMcpHttpServer(
                             ),
                         ),
                     ),
-            )
-            .also { tools ->
-                mcpDeviceToolAdapter.definitions().forEach(tools::put)
-            },
+            ),
     ).also { result ->
         result.getJSONArray("tools").put(
             JSONObject()
@@ -339,27 +343,6 @@ class PocketMcpHttpServer(
     }.also { result ->
         result.getJSONArray("tools").put(
             JSONObject()
-                .put("name", "device_get_field")
-                .put(
-                    "description",
-                    "Returns a personal-data value stored on the device so the caller can " +
-                        "type it. Account fields are bound to the app currently on screen.",
-                )
-                .put(
-                    "inputSchema",
-                    objectSchema(
-                        JSONObject().put(
-                            "field",
-                            JSONObject()
-                                .put("type", "string")
-                                .put("enum", JSONArray(SecretVault.FIELDS.keys.toList()))
-                                .put("description", fieldHints()),
-                        ),
-                    ).put("required", JSONArray().put("field")),
-                ),
-        )
-        result.getJSONArray("tools").put(
-            JSONObject()
                 .put("name", "device_type_node")
                 .put(
                     "description",
@@ -430,9 +413,82 @@ class PocketMcpHttpServer(
                 ),
         )
     }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_find_node")
+                .put(
+                    "description",
+                    "Finds visible UI text and can scroll a bounded number of times. " +
+                        "Returns a fresh snapshot_id and node_id without clicking.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put("text", JSONObject().put("type", "string").put("minLength", 1))
+                            .put("scroll", JSONObject().put("type", "boolean").put("default", false))
+                            .put(
+                                "max_scrolls",
+                                JSONObject().put("type", "integer").put("minimum", 0)
+                                    .put("maximum", 5).put("default", 3),
+                            ),
+                    ).put("required", JSONArray().put("text")),
+                ),
+        )
+    }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_set_checked")
+                .put(
+                    "description",
+                    "Idempotently sets a checkbox, switch, or toggle to the requested state.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put("snapshot_id", JSONObject().put("type", "string"))
+                            .put("node_id", JSONObject().put("type", "string"))
+                            .put("checked", JSONObject().put("type", "boolean")),
+                    ).put(
+                        "required",
+                        JSONArray().put("snapshot_id").put("node_id").put("checked"),
+                    ),
+                ),
+        )
+    }.also { result ->
+        result.getJSONArray("tools").put(
+            JSONObject()
+                .put("name", "device_select_option")
+                .put(
+                    "description",
+                    "Opens a selector from the newest snapshot and chooses an exact visible option.",
+                )
+                .put(
+                    "inputSchema",
+                    objectSchema(
+                        JSONObject()
+                            .put("snapshot_id", JSONObject().put("type", "string"))
+                            .put("node_id", JSONObject().put("type", "string"))
+                            .put("option", JSONObject().put("type", "string").put("minLength", 1)),
+                    ).put(
+                        "required",
+                        JSONArray().put("snapshot_id").put("node_id").put("option"),
+                    ),
+                ),
+        )
+    }.also { result ->
         // 어댑터가 담당하는 device tool(screenshot/back/scroll/type_text…)을 한 번에 노출.
+        // device_click_node는 위에서 snapshot_id를 강제하고 stale-screen 검증을
+        // 제공하는 Pocket 전용 정의로 이미 노출했다. RemoteDeviceCommandExecutor가
+        // 사용하는 adapter 매핑은 유지하되, tools/list에 raw 정의를 중복시키지 않는다.
         val tools = result.getJSONArray("tools")
-        mcpDeviceToolAdapter.definitions().forEach { definition -> tools.put(definition) }
+        mcpDeviceToolAdapter.definitions()
+            .filterNot { definition ->
+                definition.optString("name") ==
+                    McpDeviceToolAdapter.EXTERNAL_CLICK_NODE_NAME
+            }
+            .forEach { definition -> tools.put(definition) }
     }
 
     private fun objectSchema(properties: JSONObject): JSONObject = JSONObject()
@@ -443,6 +499,36 @@ class PocketMcpHttpServer(
     private fun callTool(params: JSONObject): JSONObject {
         val name = params.optString("name")
         val arguments = params.optJSONObject("arguments") ?: JSONObject()
+        val spec = RemoteToolCatalog.find(name)
+            ?: return toolError(
+                "REMOTE_TOOL_NOT_ALLOWED",
+                "원격 실행이 허용되지 않은 도구입니다: $name",
+            )
+        val policySnapshot = if (spec.needsCurrentSnapshot) {
+            captureSnapshotOnMainThread()
+        } else {
+            null
+        }
+        // Make this exact snapshot addressable by the adapter. Calls still
+        // have to carry its snapshot_id; node tools never consume a global
+        // latest-screen fallback.
+        policySnapshot?.let(::rememberUiObservation)
+        val policyDecision = RemoteCommandPolicy.evaluate(
+            RemotePolicyRequest(
+                toolName = name,
+                arguments = arguments,
+                grantedScopes = RemoteToolScope.ALL,
+                currentSnapshot = policySnapshot,
+                observedSnapshot = lastSnapshot.get(),
+                // The LAN MCP server has no trusted confirmation UI. Sensitive
+                // commands remain blocked until the remote device flow supplies
+                // a short-lived local approval.
+                locallyConfirmed = false,
+            ),
+        )
+        if (policyDecision is RemotePolicyDecision.Deny) {
+            return toolError(policyDecision.code, policyDecision.message)
+        }
         return when (name) {
             "device_status" -> toolResult(deviceStatus())
             "device_observe" -> {
@@ -450,7 +536,7 @@ class PocketMcpHttpServer(
                     "max_nodes",
                     DEFAULT_RETURNED_NODES,
                 ).coerceIn(1, MAX_RETURNED_NODES)
-                val snapshot = captureSnapshotOnMainThread()
+                val snapshot = policySnapshot ?: captureSnapshotOnMainThread()
                 if (snapshot == null) {
                     toolResult(
                         JSONObject()
@@ -460,15 +546,23 @@ class PocketMcpHttpServer(
                     )
                 } else {
                     lastSnapshot.set(snapshot)
-                    toolResult(snapshotJson(snapshot, maxNodes))
+                    val outgoingSnapshot =
+                        if (policyDecision is RemotePolicyDecision.AllowRedacted) {
+                            RemoteObservationRedactor.redact(snapshot)
+                        } else {
+                            snapshot
+                        }
+                    toolResult(snapshotJson(outgoingSnapshot, maxNodes))
                 }
             }
             "device_open_settings" -> openSettings()
             "device_click_node" -> clickNode(arguments)
             "device_fill_field" -> fillField(arguments)
-            "device_get_field" -> getField(arguments)
             "device_type_node" -> typeNode(arguments)
             "device_set_progress" -> setProgress(arguments)
+            "device_find_node" -> findNode(arguments, policySnapshot)
+            "device_set_checked" -> setChecked(arguments)
+            "device_select_option" -> selectOption(arguments)
             else -> if (mcpDeviceToolAdapter.handles(name)) {
                 mcpDeviceToolAdapter.call(name, arguments)
             } else {
@@ -539,46 +633,6 @@ class PocketMcpHttpServer(
         }
         val appPackage = service.rootInActiveWindow?.packageName?.toString()
         return AccountOwner(appPackage, appPackage ?: "알 수 없는 화면")
-    }
-
-    private fun getField(arguments: JSONObject): JSONObject {
-        val field = arguments.optString("field")
-        if (!SecretVault.FIELDS.containsKey(field)) {
-            return toolError(
-                "UNKNOWN_FIELD",
-                "모르는 필드입니다: $field. 가능한 값: ${SecretVault.FIELDS.keys.joinToString()}",
-            )
-        }
-        val service = AgentAccessibilityService.activeService
-            ?: return toolError("ACCESSIBILITY_NOT_CONNECTED", "접근성 서비스가 연결되지 않았습니다.")
-
-        val value = AtomicReference<String?>(null)
-        val app = AtomicReference<String?>(null)
-        val latch = CountDownLatch(1)
-        Handler(Looper.getMainLooper()).post {
-            val owner = accountOwner(service)
-            app.set(owner.shown)
-            value.set(
-                when {
-                    !SecretVault.isAccountField(field) -> SecretVault.reveal(service, field)
-                    owner.service == null -> null
-                    else -> SecretVault.reveal(service, field, owner.service)
-                },
-            )
-            latch.countDown()
-        }
-        latch.await(MAIN_THREAD_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-
-        val found = value.get()
-            ?: return toolError(
-                "FIELD_NOT_SET",
-                if (SecretVault.isAccountField(field)) {
-                    "이 앱(${app.get()})의 $field 이(가) 등록돼 있지 않습니다."
-                } else {
-                    "$field 값이 저장돼 있지 않습니다."
-                },
-            )
-        return toolResult(JSONObject().put("success", true).put("field", field).put("value", found))
     }
 
     /** 스냅샷에서 고른 입력창에 글자를 넣는다. 포커스에 기대지 않는다. */
@@ -671,6 +725,200 @@ class PocketMcpHttpServer(
                 .put("value", clamped)
                 .put("message", "$nodeId 를 $clamped 로 옮겼습니다$note."),
         )
+    }
+
+    private fun findNode(arguments: JSONObject, initial: UiSnapshot?): JSONObject {
+        val query = arguments.optString("text").trim()
+        if (query.isEmpty() || query.length > 200) {
+            return toolError("INVALID_QUERY", "text는 1~200자의 문자열이어야 합니다.")
+        }
+        val shouldScroll = arguments.optBoolean("scroll", false)
+        val maxScrolls = arguments.optInt("max_scrolls", 3).coerceIn(0, 5)
+        var performed = 0
+        var snapshot = initial ?: captureSnapshotOnMainThread()
+            ?: return toolError("NO_ACTIVE_WINDOW", "현재 화면을 읽을 수 없습니다.")
+        while (true) {
+            val match = findTextMatch(snapshot, query)
+            if (match != null) {
+                lastSnapshot.set(snapshot)
+                rememberUiObservation(snapshot)
+                return toolResult(
+                    JSONObject().put("success", true).put("found", true)
+                        .put("snapshot_id", snapshot.fingerprint.hash)
+                        .put("node_id", match.id)
+                        .put("text", match.text ?: match.contentDescription ?: match.hint)
+                        .put("scrolls_performed", performed),
+                )
+            }
+            if (!shouldScroll || performed >= maxScrolls) break
+            val container = snapshot.nodes
+                .filter { it.visibleToUser && it.enabled && it.scrollable }
+                .maxByOrNull { it.bounds.width().toLong() * it.bounds.height().toLong() }
+                ?: return toolError("NO_SCROLL_CONTAINER", "화면에서 스크롤 가능한 영역을 찾지 못했습니다.")
+            rememberUiObservation(snapshot)
+            val result = mcpDeviceToolAdapter.call(
+                "device_scroll",
+                JSONObject()
+                    .put("snapshot_id", snapshot.fingerprint.hash)
+                    .put("direction", "down")
+                    .put("node_id", container.id),
+            )
+            if (result.optBoolean("isError")) return result
+            performed += 1
+            Thread.sleep(FIND_NODE_SETTLE_MS)
+            snapshot = captureSnapshotOnMainThread()
+                ?: return toolError("NO_ACTIVE_WINDOW", "스크롤 후 화면을 읽을 수 없습니다.")
+        }
+        lastSnapshot.set(snapshot)
+        rememberUiObservation(snapshot)
+        return toolResult(
+            JSONObject().put("success", true).put("found", false)
+                .put("snapshot_id", snapshot.fingerprint.hash)
+                .put("scrolls_performed", performed),
+        )
+    }
+
+    private fun setChecked(arguments: JSONObject): JSONObject {
+        if (!arguments.has("checked")) return toolError("MISSING_CHECKED", "checked 값이 필요합니다.")
+        val observed = lastSnapshot.get()
+            ?: return toolError("NO_OBSERVATION", "device_observe를 먼저 호출하세요.")
+        if (arguments.optString("snapshot_id") != observed.fingerprint.hash) {
+            return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
+        }
+        val target = observed.nodes.firstOrNull { it.id == arguments.optString("node_id") }
+            ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
+        val wanted = arguments.optBoolean("checked")
+        val before = target.checked
+            ?: return toolError("NOT_CHECKABLE", "체크 상태를 제공하는 노드가 아닙니다.")
+        if (before == wanted) {
+            return toolResult(
+                JSONObject().put("success", true).put("changed", false)
+                    .put("node_id", target.id).put("checked", wanted),
+            )
+        }
+        val clicked = clickNode(arguments)
+        if (clicked.optBoolean("isError")) return clicked
+        Thread.sleep(ACTION_SETTLE_MS)
+        val after = captureSnapshotOnMainThread()
+            ?: return toolError("NO_ACTIVE_WINDOW", "동작 후 화면을 확인할 수 없습니다.")
+        lastSnapshot.set(after)
+        rememberUiObservation(after)
+        val checked = after.nodes.firstOrNull { sameNode(target, it) }?.checked
+        if (checked != wanted) {
+            return toolError("CHECK_STATE_NOT_REACHED", "요청한 체크 상태가 적용되지 않았습니다.")
+        }
+        return toolResult(
+            JSONObject().put("success", true).put("changed", true)
+                .put("node_id", target.id).put("checked", checked)
+                .put("after_snapshot_id", after.fingerprint.hash),
+        )
+    }
+
+    private fun selectOption(arguments: JSONObject): JSONObject {
+        val option = arguments.optString("option").trim()
+        if (option.isEmpty() || option.length > 200) {
+            return toolError("INVALID_OPTION", "option은 1~200자의 문자열이어야 합니다.")
+        }
+        val observed = lastSnapshot.get()
+            ?: return toolError("NO_OBSERVATION", "device_observe를 먼저 호출하세요.")
+        if (arguments.optString("snapshot_id") != observed.fingerprint.hash) {
+            return toolError("STALE_SNAPSHOT", "가장 최근 snapshot_id가 아닙니다.")
+        }
+        val selector = observed.nodes.firstOrNull { it.id == arguments.optString("node_id") }
+            ?: return toolError("NODE_NOT_FOUND", "snapshot에 해당 node_id가 없습니다.")
+        if (!isSelectorNode(selector)) {
+            return toolError(
+                "NOT_A_SELECTOR",
+                "Spinner 또는 드롭다운으로 확인된 노드만 option을 선택할 수 있습니다.",
+            )
+        }
+        val opened = clickNode(arguments)
+        if (opened.optBoolean("isError")) return opened
+        Thread.sleep(ACTION_SETTLE_MS)
+        val options = captureSnapshotOnMainThread()
+            ?: return toolError("NO_ACTIVE_WINDOW", "선택 항목 화면을 읽을 수 없습니다.")
+        val optionNode = findTextMatch(options, option, exactOnly = true)
+            ?.takeIf { it.visibleToUser && it.enabled }
+            ?: return toolError("OPTION_NOT_FOUND", "정확히 일치하는 선택 항목을 찾지 못했습니다: $option")
+        val optionDecision = RemoteCommandPolicy.evaluate(
+            RemotePolicyRequest(
+                toolName = "device_click_node",
+                arguments = JSONObject()
+                    .put("snapshot_id", options.fingerprint.hash)
+                    .put("node_id", optionNode.id),
+                grantedScopes = RemoteToolScope.ALL,
+                currentSnapshot = options,
+                observedSnapshot = options,
+                locallyConfirmed = false,
+            ),
+        )
+        if (optionDecision is RemotePolicyDecision.Deny) {
+            return toolError(optionDecision.code, optionDecision.message)
+        }
+        lastSnapshot.set(options)
+        rememberUiObservation(options)
+        val selected = clickNode(
+            JSONObject()
+                .put("snapshot_id", options.fingerprint.hash)
+                .put("node_id", optionNode.id),
+        )
+        if (selected.optBoolean("isError")) return selected
+        val after = captureSnapshotOnMainThread() ?: options
+        lastSnapshot.set(after)
+        rememberUiObservation(after)
+        return toolResult(
+            JSONObject().put("success", true)
+                .put("node_id", arguments.optString("node_id"))
+                .put("option", option)
+                .put("after_snapshot_id", after.fingerprint.hash),
+        )
+    }
+
+    private fun findTextMatch(
+        snapshot: UiSnapshot,
+        query: String,
+        exactOnly: Boolean = false,
+    ): UiNode? {
+        val wanted = query.trim().lowercase()
+        return snapshot.nodes.asSequence()
+            .filter { it.visibleToUser }
+            .mapNotNull { node ->
+                val labels = listOfNotNull(node.text, node.contentDescription, node.hint)
+                val exact = labels.any { it.trim().lowercase() == wanted }
+                val contains = labels.any { it.lowercase().contains(wanted) }
+                when {
+                    exact -> node to 2
+                    !exactOnly && contains -> node to 1
+                    else -> null
+                }
+            }
+            .maxByOrNull { it.second }
+            ?.first
+    }
+
+    private fun sameNode(expected: UiNode, actual: UiNode): Boolean =
+        expected.bounds == actual.bounds &&
+            expected.viewId == actual.viewId &&
+            expected.text == actual.text &&
+            expected.contentDescription == actual.contentDescription
+
+    private fun isSelectorNode(node: UiNode): Boolean {
+        val className = node.className.orEmpty().lowercase()
+        val label = listOfNotNull(node.text, node.contentDescription, node.hint)
+            .joinToString(" ")
+            .lowercase()
+        val role = node.roleDescription.orEmpty().lowercase()
+        return className.contains("spinner") ||
+            className.contains("autocompletetextview") ||
+            role.contains("drop-down") ||
+            role.contains("dropdown") ||
+            role.contains("combo") ||
+            role.contains("드롭다운") ||
+            role.contains("menu popup") ||
+            role.contains("menu pop-up") ||
+            role.contains("메뉴 팝업") ||
+            label.contains("드롭다운") ||
+            label.contains("dropdown")
     }
 
     private fun fieldHints(): String =
@@ -809,9 +1057,32 @@ class PocketMcpHttpServer(
             )
             if (success) method = "coordinate_tap"
         }
-        val after = waitForScreenChange(current)
+        var after = waitForScreenChange(current)
+        var changed = after?.fingerprint?.hash != current.fingerprint.hash
+
+        // Some WebView buttons report a successful ACTION_CLICK while only
+        // moving accessibility focus. This is reproducible on the Megabox seat
+        // map and leaves the seat unselected. Retry only an unchanged, visible
+        // WebView button so native controls are not accidentally activated
+        // twice.
+        if (
+            success &&
+            !changed &&
+            shouldRetryUnchangedWebButton(target, current) &&
+            target.bounds.width() > 0 &&
+            target.bounds.height() > 0
+        ) {
+            val tapped = tapOnMainThread(
+                target.bounds.exactCenterX(),
+                target.bounds.exactCenterY(),
+            )
+            if (tapped) {
+                method = "node_click_then_verified_coordinate_retry"
+                after = waitForScreenChange(current)
+                changed = after?.fingerprint?.hash != current.fingerprint.hash
+            }
+        }
         if (after != null) lastSnapshot.set(after)
-        val changed = after?.fingerprint?.hash != current.fingerprint.hash
 
         return toolResult(
             JSONObject()
@@ -833,6 +1104,21 @@ class PocketMcpHttpServer(
                 ),
             isError = !success,
         )
+    }
+
+    private fun shouldRetryUnchangedWebButton(
+        target: UiNode,
+        snapshot: UiSnapshot,
+    ): Boolean {
+        if (target.className != "android.widget.Button" || !target.clickable) return false
+        val byId = snapshot.nodes.associateBy(UiNode::id)
+        var parentId = target.parentId
+        while (parentId != null) {
+            val parent = byId[parentId] ?: return false
+            if (parent.className == "android.webkit.WebView") return true
+            parentId = parent.parentId
+        }
+        return false
     }
 
     private fun toolError(code: String, message: String): JSONObject = toolResult(
@@ -920,6 +1206,7 @@ class PocketMcpHttpServer(
                     .put("content_description", node.contentDescription ?: JSONObject.NULL)
                     .put("hint", node.hint ?: JSONObject.NULL)
                     .put("class_name", node.className ?: JSONObject.NULL)
+                    .put("role_description", node.roleDescription ?: JSONObject.NULL)
                     .put("view_id", node.viewId ?: JSONObject.NULL)
                     .put("clickable", node.clickable)
                     .put("editable", node.editable)
@@ -927,6 +1214,7 @@ class PocketMcpHttpServer(
                     .put("scrollable", node.scrollable)
                     .put("enabled", node.enabled)
                     .put("checked", node.checked ?: JSONObject.NULL)
+                    .put("selected", node.selected)
                     .put("focused", node.focused)
                     .put("input_type", node.inputType)
                     .put("visible_to_user", node.visibleToUser)
@@ -1103,5 +1391,7 @@ class PocketMcpHttpServer(
         private const val MAIN_THREAD_TIMEOUT_MS = 3_000L
         private const val ACTION_VERIFY_TIMEOUT_MS = 3_000L
         private const val ACTION_VERIFY_POLL_MS = 150L
+        private const val FIND_NODE_SETTLE_MS = 400L
+        private const val ACTION_SETTLE_MS = 350L
     }
 }

@@ -5,6 +5,8 @@ import com.example.mobileguiagent.device.DeviceToolCall
 import com.example.mobileguiagent.device.DeviceToolRegistry
 import com.example.mobileguiagent.device.DeviceToolResult
 import com.example.mobileguiagent.device.GoBackDeviceTool
+import com.example.mobileguiagent.device.OpenUriDeviceTool
+import com.example.mobileguiagent.device.TapNodeDeviceTool
 import com.example.mobileguiagent.device.WaitDeviceTool
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -71,5 +73,33 @@ class DeviceToolRegistryInstrumentedTest {
         assertEquals(WaitDeviceTool.NAME, (result as DeviceToolResult.Action).action)
         assertTrue(result.success)
         assertTrue("elapsedMs=$elapsedMs", elapsedMs >= 280)
+    }
+
+    @Test
+    fun registryIncludesSafeOpenUriAndRejectsUnsafeSchemesBeforeExecution() {
+        val definitions = registry.definitions.associateBy { it.name }
+        assertTrue(definitions.containsKey(OpenUriDeviceTool.NAME))
+
+        val result = registry.execute(
+            DeviceToolCall(
+                name = OpenUriDeviceTool.NAME,
+                arguments = JSONObject().put("uri", "intent://settings#Intent;end"),
+            ),
+        )
+        assertTrue(result is DeviceToolResult.Error)
+        assertEquals("URI_NOT_ALLOWED", (result as DeviceToolResult.Error).code)
+    }
+
+    @Test
+    fun nodeActionNeverFallsBackToAnotherCallersLatestObservation() {
+        val result = registry.execute(
+            DeviceToolCall(
+                name = TapNodeDeviceTool.NAME,
+                arguments = JSONObject().put("node_id", "node_0"),
+            ),
+        )
+
+        assertTrue(result is DeviceToolResult.Error)
+        assertEquals("OBSERVE_UI_REQUIRED", (result as DeviceToolResult.Error).code)
     }
 }
