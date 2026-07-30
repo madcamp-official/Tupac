@@ -444,14 +444,58 @@ class AgentAccessibilityService : AccessibilityService() {
         return editable.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
     }
 
+    /**
+     * 지금 입력창의 키보드 확인 동작(검색·이동·완료)을 실행한다.
+     *
+     * 검색창 옆의 돋보기 아이콘은 라벨이 없는 경우가 많아, 좌표로 짚거나 이름으로
+     * 찾으려다 엉뚱한 것을 누르기 쉽다. 그 아이콘이 하는 일을 안드로이드가
+     * ACTION_IME_ENTER로 이미 제공하므로 그쪽을 부른다.
+     *
+     * 어느 입력창인가:
+     *   포커스가 있는 것을 먼저 본다. 없으면 글자가 든 것을 고른다 — 방금 채운
+     *   칸이 그것이기 때문이다. 그래도 없으면 화면의 첫 입력창이다.
+     *
+     * 왜 포커스를 다시 주는가:
+     *   ACTION_SET_TEXT는 글자만 넣고 포커스는 옮기지 않는다. 그래서 채운 직후
+     *   화면에는 포커스를 가진 입력창이 하나도 없고(실측: mServedView=null),
+     *   그 상태로 ACTION_IME_ENTER를 보내면 받아들이고도 아무 일이 없다.
+     *   사람은 칸을 누르고 타이핑한 뒤 검색을 누른다. 그 첫 단계를 여기서 채운다.
+     */
+    fun submitFirstEditable(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        val root = rootInActiveWindow ?: return false
+        val editable = findFirstNode(root) { node ->
+            node.isEditable && node.isEnabled && node.isFocused
+        } ?: findFirstNode(root) { node ->
+            node.isEditable && node.isEnabled && !node.text.isNullOrBlank()
+        } ?: findFirstNode(root) { node ->
+            node.isEditable && node.isEnabled
+        } ?: return false
+
+        if (!editable.isFocused) {
+            editable.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        }
+        return editable.performAction(
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id,
+        )
+    }
+
     fun tap(
         x: Float,
         y: Float,
         onComplete: (Boolean) -> Unit,
     ) {
-        val path = Path().apply { moveTo(x, y) }
+        val path = Path().apply {
+            moveTo(x, y)
+            // 길이가 0인 제스처는 일부 삼성/WebView 조합에서 onCompleted를 돌려주고도
+            // 터치 이벤트를 실제로 보내지 않는다. 성공했다는 답만 받고 화면은 그대로다.
+            // 1픽셀 미만의 선분을 붙이면 여전히 탭이지만 윤곽이 생겨 전달된다.
+            // 이 경로는 device_click_node가 ACTION_CLICK에 실패했을 때의 구제책이라
+            // — 라벨 없는 노드, WebView — 조용히 실패하면 대안이 남지 않는다.
+            lineTo(if (x >= TAP_PATH_EPSILON_PX) x - TAP_PATH_EPSILON_PX else x + TAP_PATH_EPSILON_PX, y)
+        }
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, 50L))
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, TAP_GESTURE_DURATION_MS))
             .build()
         dispatchGesture(
             gesture,
@@ -702,6 +746,8 @@ class AgentAccessibilityService : AccessibilityService() {
 
         /** AndroidX가 roleDescription을 담아 보내는 extras 키. 플랫폼 상수가 아니다. */
         private const val ROLE_DESCRIPTION_KEY = "AccessibilityNodeInfo.roleDescription"
+        private const val TAP_PATH_EPSILON_PX = 2f
+        private const val TAP_GESTURE_DURATION_MS = 120L
 
         /** 주소창을 가진 앱으로 볼 패키지 조각. */
         private val BROWSER_MARKERS = listOf(
