@@ -249,10 +249,22 @@ class PocketMcpHttpServer(
                 device_open_screen, device_start_task, device_system_action or
                 device_launch_app gets you there in one jump — they usually do.
 
-                Personal data: never type someone's name, phone number, address, ID or
-                password yourself, and do not ask the person for them. Call
-                device_fill_secrets with the kinds of value the form needs. It reads them
-                from the phone's vault and fills the fields without showing you the values.
+                Personal data: never invent it. Call device_fill_secrets with the kinds of
+                value the form needs — it reads them from the phone's vault and fills the
+                fields without showing you the values. That is always the first move.
+
+                When it reports a value it does not have, what to do next depends on which
+                kind it is:
+                  - name, phone, email, birthday, address, postcode — ask the person for
+                    it and type what they give you with device_type_node. This is the
+                    ordinary way a form gets finished; do not send them off to a settings
+                    screen for it.
+                  - ID or password — do not ask. Say which app needs it and that they can
+                    register it in this app's "내 정보" screen. Anything the person types
+                    to you has left the phone, and a password must not.
+
+                A value they give you in conversation is theirs to use for that form, and
+                is not stored. If they want it remembered, that is the "내 정보" screen.
 
                 Leave these to the person, and say so instead of doing them:
                   - placing a call or sending a message (device_start_task only fills the

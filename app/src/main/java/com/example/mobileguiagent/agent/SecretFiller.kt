@@ -70,11 +70,7 @@ object SecretFiller {
         val values = readVault(service, requested, first.packageName)
         val missing = requested.filterNot { values.containsKey(it) }
         if (values.isEmpty()) {
-            return Outcome.Failed(
-                "FIELD_NOT_SET",
-                "요청한 값이 이 기기에 등록돼 있지 않습니다: ${missing.joinToString()}. " +
-                    "앱의 \"내 정보\" 화면에서 먼저 등록하세요.",
-            )
+            return Outcome.Failed("FIELD_NOT_SET", whatToDoAbout(missing))
         }
         // 계정은 쌍으로만 쓴다. 아이디 없이 비밀번호만 넣고 로그인을 누르면 반드시
         // 실패하는데, 그 실패가 앱에 따라 시도 횟수로 잡혀 계정이 잠긴다. 되돌릴
@@ -142,7 +138,7 @@ object SecretFiller {
             }
             val step = plan.current ?: break
             if (step.action == "done") {
-                return Outcome.Done(summary(order, filled, submitted, unplaced + missing))
+                return Outcome.Done(summary(order, filled, submitted, unplaced, missing))
             }
 
             val node = screen.nodes.firstOrNull { it.id == step.nodeId }
@@ -183,12 +179,45 @@ object SecretFiller {
         return Outcome.Done(summary(order, filled, submitted, emptyList()))
     }
 
-    /** 무엇을 했는지만 적는다. 무엇을 넣었는지는 적지 않는다. */
+    /**
+     * 없는 값에 대해 부르는 쪽이 다음에 할 일을 적는다.
+     *
+     * 종류에 따라 다르다. 이름·연락처·주소는 사람에게 물어 받아 넣으면 되는
+     * 것이다 — 폼을 끝내는 평범한 방법이고, 그걸 설정 화면으로 돌려보내면
+     * 하던 일이 끊긴다.
+     *
+     * 아이디·비밀번호는 물어선 안 된다. 사람이 부르는 쪽에게 적어 보내는 순간
+     * 그 값은 이미 폰을 떠난다. 금고를 만든 이유가 그것이라, 없으면 없는 채로
+     * 두고 등록할 자리를 알려준다.
+     */
+    private fun whatToDoAbout(missing: List<String>): String {
+        val account = missing.filter { SecretVault.isAccountField(it) }
+        val profile = missing.filterNot { SecretVault.isAccountField(it) }
+        return listOfNotNull(
+            profile.takeIf { it.isNotEmpty() }?.let { fields ->
+                "${fields.joinToString()}이(가) 금고에 없습니다. 사람에게 물어보고 " +
+                    "device_type_node로 넣으세요."
+            },
+            account.takeIf { it.isNotEmpty() }?.let { fields ->
+                "${fields.joinToString()}은(는) 금고에 없습니다. 물어보지 마세요 — " +
+                    "앱의 \"내 정보\" 화면에서 이 앱 계정을 등록해야 합니다."
+            },
+        ).joinToString(" ")
+    }
+
+    /**
+     * 무엇을 했는지만 적는다. 무엇을 넣었는지는 적지 않는다.
+     *
+     * 못 채운 이유를 둘로 나눈다. 칸을 못 찾은 것과 금고에 값이 없는 것은
+     * 다음에 할 일이 다르다 — 앞은 화면을 확인할 일이고, 뒤는 사람에게 묻거나
+     * 등록할 일이다. 한 문장으로 뭉치면 부르는 쪽이 무엇을 해야 할지 모른다.
+     */
     private fun summary(
         order: List<String>,
         filled: Set<String>,
         submitted: Boolean,
-        skipped: List<String>,
+        unplaced: List<String>,
+        missing: List<String> = emptyList(),
     ): String {
         val done = order.filter { it in filled }
         val head = when {
@@ -196,11 +225,15 @@ object SecretFiller {
             submitted -> "${done.joinToString()}을(를) 넣고 제출했습니다."
             else -> "${done.joinToString()}을(를) 넣었습니다. 제출은 하지 않았습니다."
         }
-        val tail = skipped.distinct()
+        val noRoom = unplaced.distinct()
             .takeIf { it.isNotEmpty() }
             ?.let { " ${it.joinToString()}은(는) 넣을 칸을 찾지 못해 비워뒀습니다." }
             .orEmpty()
-        return head + tail
+        val noValue = missing.distinct()
+            .takeIf { it.isNotEmpty() }
+            ?.let { " " + whatToDoAbout(it) }
+            .orEmpty()
+        return head + noRoom + noValue
     }
 
     /**
