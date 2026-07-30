@@ -103,14 +103,3 @@ data class NodeActionResult(
     val matchedNodeId: String? = null,
     val usedClickableAncestor: Boolean = false,
 )
-
-data class PocMetric(
-    val task: String,
-    val success: Boolean,
-    val steps: Int,
-    val latencyMs: Long,
-    val nodeActionUsed: Boolean,
-    val coordinateActionUsed: Boolean,
-    val screenChanged: Boolean,
-    val failureCode: String?,
-)

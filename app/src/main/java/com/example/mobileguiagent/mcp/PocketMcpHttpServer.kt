@@ -1356,7 +1356,6 @@ class PocketMcpHttpServer(
             .put("server_version", SERVER_VERSION)
             .put("accessibility_connected", AgentAccessibilityService.activeService != null)
             .put("foreground_package", state.foregroundPackage)
-            .put("agent_running", state.running)
             .put("timestamp_ms", System.currentTimeMillis())
     }
 
