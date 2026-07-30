@@ -246,8 +246,20 @@ class PocketMcpHttpServer(
 
                 How to work: call device_observe to read the screen, then act on node IDs
                 from that newest snapshot. Before groping through the UI, check whether
-                device_open_screen, device_start_task, device_system_action or
-                device_launch_app gets you there in one jump — they usually do.
+                device_open_screen, device_start_task, device_system_action,
+                device_launch_app or device_open_uri gets you there in one jump — they
+                usually do.
+
+                After typing into a search or login box, call device_submit_text rather
+                than hunting for the magnifier beside it. Those icons are often unlabelled,
+                and the one you pick is as likely to be a filter or voice search. It tells
+                you whether the screen actually changed; if it did not, the field may not
+                have submitted and the button on screen is the fallback.
+
+                To move content: device_scroll takes a direction and picks the path itself
+                — that is the one for lists. Use device_swipe when where you start and stop
+                is the point: carousels, dragging a bottom sheet down, swiping a row to
+                reveal its buttons.
 
                 Personal data: never invent it. Call device_fill_secrets with the kinds of
                 value the form needs — it reads them from the phone's vault and fills the
