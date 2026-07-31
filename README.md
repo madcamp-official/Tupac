@@ -280,13 +280,64 @@ Kotlin의 `?:`는 null에만 반응해서 라벨이 `""`가 되고, 배송지 �
 
 ---
 
+## 처음 쓰는 사람
+
+폰 한 대와 그 폰을 봐줄 컴퓨터 한 대가 필요하다. **안드로이드만 된다** — 화면을 읽는
+접근성 서비스도, 탭을 보내는 `dispatchGesture`도, 금고의 Keystore도 안드로이드
+API다. iOS는 앱이 다른 앱 화면을 읽는 것을 막으므로 포팅이 아니라 다른 제품이 된다.
+
+**준비물**
+
+| | |
+|---|---|
+| 폰 | 안드로이드 11 이상. `minSdk`는 29지만 화면 캡처와 `submit_text`가 API 30을 쓴다 |
+| 컴퓨터 | 릴레이와 터널을 돌릴 곳. 폰과 같은 Wi-Fi일 필요는 없다 |
+| JDK | 17 이상 (여기서는 21로 빌드했다) |
+| Android SDK | `adb`가 있으면 된다. Android Studio를 깔면 같이 온다 |
+| cloudflared | 폰이 찾아올 공개 주소를 만든다 |
+| Python 3 | 릴레이와 Claude Desktop 다리가 표준 라이브러리만 쓴다 |
+
+### ⓪ 앱을 폰에 넣는다
+
+```bash
+git clone <이 저장소> && cd Tupac
+./gradlew :app:assembleDebug
+adb install app/build/outputs/apk/debug/app-debug.apk
+```
+
+USB 디버깅을 먼저 켜야 한다(설정 → 휴대전화 정보 → 소프트웨어 정보 → 빌드번호 7번
+탭 → 개발자 옵션 → USB 디버깅). 케이블 없이 하려면 `sh eval/connect.sh`.
+
+### ① 접근성을 켠다
+
+설정 → 접근성 → 설치된 앱 → **Mobile GUI Agent** → 사용.
+
+이걸 켜야 화면을 읽고 누를 수 있다. **앱을 다시 설치하면 꺼지므로 그때마다 다시
+켠다.** 앱 첫 화면의 "접근성 서비스"가 "연결됨"이면 된 것이다.
+
+### ② 내 정보를 등록한다
+
+앱 첫 화면 오른쪽 위 **"내 정보"**. 여기 넣은 값은 폰을 벗어나지 않는다.
+
+**공통 정보** — 앱과 무관하게 하나면 되는 값. `name` `phone` `email` `birthday`
+`address` `address_detail` `postcode`.
+
+**앱 계정** — 앱 이름을 적어 고른 뒤(예: 카카오톡) `username`과 `password`를 넣는다.
+등록한 계정은 그 앱 화면에서만 쓰인다. 다른 앱에서는 꺼내지지 않는다.
+
+비워둬도 된다. 없는 값은 에이전트가 사람에게 물어본다 — 다만 아이디·비밀번호만은
+묻지 않고 "이 앱 계정을 내 정보에 등록하라"고 안내한다. 대화로 받은 비밀번호는
+이미 폰을 떠난 것이기 때문이다.
+
+---
+
 ## 돌려보기
 
-터미널 두 개를 열어둔다.
+여기부터는 쓸 때마다 한다. 터미널 두 개를 열어둔다.
 
 ```bash
 # ① 우체국
-cd /Users/parkminsu/Tupac
+cd <저장소>
 RELAY_TOKEN=<아무 값이나 정한다> python3 relay/server.py
 
 # ② 공개 주소 (폰이 밖에서 찾아올 곳)
@@ -298,13 +349,17 @@ cloudflared tunnel --url http://localhost:8790
 
 ```bash
 # ③ 폰에 릴레이 주소를 알려준다
-adb shell am force-stop com.example.mobileguiagent
-adb shell am start -n com.example.mobileguiagent/.MainActivity \
+adb shell am start -n com.example.mobileguiagent/.MainActivity --activity-single-top \
   --es relay_url <터널 주소> --es relay_token <①에서 정한 값>
 ```
 
 주소가 비어 있으면 앱은 아무 데도 접속하지 않는다. 밖으로 나가는 일은 사람이
 정한 다음에 일어나야 하기 때문이다. 아직 설정 화면이 없어 실행 인텐트로 넣는다.
+
+`--activity-single-top`이 있어야 이미 떠 있는 앱에 인텐트가 전달된다. 없으면
+"Activity not started, its current task has been brought to the front"만 뜨고
+주소는 안 바뀐다. **`force-stop`은 쓰지 않는다** — 접근성 서비스까지 죽어서
+설정에서 다시 켜야 한다.
 
 ```bash
 # ④ 여기까지 되는지 먼저 본다. 안 되면 Claude를 건드려도 소용없다
@@ -325,7 +380,7 @@ curl -s -m 45 -X POST http://127.0.0.1:8790/rpc \
   "mcpServers": {
     "tupac-phone": {
       "command": "python3",
-      "args": ["/Users/parkminsu/Tupac/eval/phone_relay.py"],
+      "args": ["<저장소 절대경로>/eval/phone_relay.py"],
       "env": {
         "TOKEN": "<①에서 정한 값>",
         "PHONE_MCP_URL": "http://127.0.0.1:8790/rpc"
@@ -343,9 +398,17 @@ curl -s -m 45 -X POST http://127.0.0.1:8790/rpc \
 케이블로 붙일 수도 있다. 개발 중에는 이쪽이 빠르다.
 
 ```bash
-adb forward tcp:9911 tcp:8765
-# PHONE_MCP_URL 을 http://127.0.0.1:9911/mcp 로, TOKEN 은 앱 화면의 페어링 토큰으로
+sh eval/connect.sh          # 무선 전환 + tcp:9911 → 폰 8765 포워딩
+
+# 이 길의 토큰은 릴레이 토큰이 아니라 폰이 만든 페어링 토큰이다. 화면에는 안 뜬다.
+export TOKEN=$(adb shell run-as com.example.mobileguiagent \
+    cat /data/data/com.example.mobileguiagent/shared_prefs/pocket_mcp_auth.xml \
+    | sed -n 's/.*name="bearer_token">\([^<]*\)<.*/\1/p')
+
+# claude_desktop_config.json 의 PHONE_MCP_URL 을 http://127.0.0.1:9911/mcp 로 바꾼다
 ```
+
+릴레이도 터널도 필요 없고 왕복이 하나 줄지만, 폰이 같은 네트워크에 있어야 한다.
 
 폰은 어느 길로 붙든 **잠금이 풀려 있어야** 한다. 잠긴 화면에서는 접근성 서비스가
 아무것도 못 한다. 접근성도 켜져 있어야 하고(설정 → 접근성 → 설치된 앱), 앱을
