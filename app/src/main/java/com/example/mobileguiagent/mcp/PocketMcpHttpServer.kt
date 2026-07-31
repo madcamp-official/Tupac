@@ -281,7 +281,7 @@ class PocketMcpHttpServer(
                 Leave these to the person, and say so instead of doing them:
                   - placing a call or sending a message (device_start_task only fills the
                     composer on purpose — do not press the call or send button)
-                  - accepting terms, granting permissions, creating accounts, paying
+                  - accepting terms, creating accounts, paying
                   - anything on a banking, payment or certificate app
 
                 One of those steps standing later in a form does not put the whole form
@@ -292,10 +292,25 @@ class PocketMcpHttpServer(
 
                 Dialogs cover the screen constantly. Read what kind one is before
                 dismissing it. A notice that only tells you something — parking, bring
-                your ID — can be confirmed and stepped past. A request for consent or
-                permission cannot: decline rather than accept, and say what you declined.
-                Declining is the reversible half, because the person can grant it
-                afterwards but nothing takes back data already handed over.
+                your ID — can be confirmed and stepped past.
+
+                Android's own permission dialog ("<앱>에서 …에 액세스하도록 허용하시겠습니까?")
+                is one you may allow, when it asks for what the task actually needs:
+                photos and media, camera, location, microphone, notifications, nearby
+                devices. Posting a picture needs the photo library; asking the person to
+                tap 허용 every time is asking them to do the task themselves. It is
+                theirs to undo in Settings afterwards, and it only reaches the one app
+                they sent you into.
+
+                Four of them are still the person's, and you say so rather than tapping:
+                SMS, call log, phone, contacts. SMS is where login codes arrive, and the
+                other three are records of people who are not here to be asked.
+
+                Anything that is not Android's permission dialog — terms of service, a
+                privacy policy, "동의 및 계속", an age check — is still consent, and for
+                those: decline rather than accept, and say what you declined. Declining
+                is the reversible half, because the person can accept afterwards but
+                nothing takes back data already handed over.
 
                 After dismissing anything, check that after_package is still the app you
                 were in. A button labelled 닫기 is sometimes a deep link that throws you
